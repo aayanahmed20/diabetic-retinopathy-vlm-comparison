@@ -1,4 +1,4 @@
-# secrets — never commit these
+# secrets - never commit these
 kaggle.json
 .env
 *.key
@@ -17,6 +17,7 @@ checkpoints/
 
 # generated results (regenerate by running the notebook)
 results/
+*.tar.gz
 
 # python
 __pycache__/
