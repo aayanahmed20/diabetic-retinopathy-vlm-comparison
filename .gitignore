@@ -1,0 +1,24 @@
+# secrets — never commit these
+kaggle.json
+.env
+*.key
+*_TOKEN*
+*_API_KEY*
+
+# data / model weights (too large for git, and APTOS license restricts redistribution)
+aptos2019/
+*.png
+*.jpg
+*.jpeg
+!figures/*.png
+checkpoints/
+*.pth
+*.ckpt
+
+# generated results (regenerate by running the notebook)
+results/
+
+# python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
