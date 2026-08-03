@@ -41,17 +41,17 @@ This notebook:
 - RetiZero's pretrained weights are not on pip/HF — they're a manual Google Drive download
   (linked in the RetiZero setup cell below). This notebook downloads them with `gdown`.
 
-**⚠️ Sample size note:** `N_PER_GRADE = 2` below reproduces the "10 images" scope of the
-original ask. That is *not* a statistically defensible sample for a paper — one wrong
-prediction swings overall accuracy by 10 points, and 2 images/class won't support a stable
-confusion matrix. Raise `N_PER_GRADE` to 20–30 (100–150 images total) before writing up
-numbers for submission.
+**⚠️ Sample size note:** `N_PER_GRADE = 25` below (125 images total) is the low end of what's
+defensible for a paper — the original "10 images" ask (`N_PER_GRADE = 2`) is a pipeline
+smoke-test only: one wrong prediction swings overall accuracy by 10 points, and 2 images/class
+can't support a stable confusion matrix or per-class precision/recall. Raise further (30-40/class)
+if your Gemini API quota and Colab session length allow it.
 """)
 
 # ---------------------------------------------------------------------------
 md("## 0. Configuration")
 code("""\
-N_PER_GRADE = 2          # images sampled per ICDR grade (0-4). 2 -> 10 total images, as requested.
+N_PER_GRADE = 25         # images sampled per ICDR grade (0-4). 25 -> 125 total images.
 RANDOM_SEED = 42          # change for a different random draw; keep fixed for reproducibility
 GEMINI_MODEL = "gemini-2.5-flash"          # any current Gemini vision-capable model
 MEDGEMMA_MODEL_ID = "google/medgemma-4b-it"
@@ -229,9 +229,25 @@ md("""\
 ## 6. Model 3 — RetiZero (zero-shot retinal foundation model)
 
 RetiZero's weights are not hosted on pip/HF — they're a manual Google Drive file linked in
-the repo's README. `gdown` fetches it by file ID. RetiZero is a *zero-shot* retrieval/classification
-model: it embeds the image and a set of candidate text labels, then scores their similarity —
-so we hand it the 5 ICDR grade names as label candidates rather than asking it to "write a digit."
+the repo's README. `gdown` fetches it by file ID. RetiZero exposes a `CLIPRModel` class
+(`zeroshot/modeling/model.py`) called directly as `model(image, text_list)`, returning
+`(probability, logits)` over `text_list` — confirmed against the repo's own `Zeroshot.py`
+reference script.
+
+**⚠️ Run this section in its own Colab runtime, separate from Section 5 (MedGemma).**
+RetiZero's `requirements.txt` pins `torch~=1.13.1` / `transformers~=4.27.4`; MedGemma needs a
+much newer `transformers` for its architecture. Installing both in one environment will likely
+break one of them. Recommended flow: `Runtime → Disconnect and delete runtime` after Section 5,
+run Section 6 fresh, export `retizero_predictions.csv`, then re-merge in Section 7/8.
+
+**⚠️ Granularity caveat — disclose this in the report.** RetiZero's own demo evaluates 14
+disease *types* (Normal, Retinal Vein Occlusion, glaucoma, AMD, etc.), where DR appears as just
+two of those types — "Non-proliferative Diabetic Retinopathy" and "Proliferative Diabetic
+Retinopathy" — not a mild/moderate/severe 5-way split. Below we pass the 5 ICDR grade names as
+custom candidate text anyway (the model accepts arbitrary text, so it's mechanically possible),
+but this is an untested extrapolation beyond what RetiZero's paper validated for this specific
+task. Report both: (a) this 5-way ICDR attempt, and (b) a secondary, more faithful check using
+RetiZero's native categories collapsed to "no DR" vs "any DR" as a binary sanity check.
 """)
 code("""\
 !git clone -q {RETIZERO_REPO} /content/RetiZero
@@ -242,32 +258,45 @@ code("""\
 """)
 
 code("""\
-# RetiZero ships a Zeroshot.py reference script rather than a pip-installable inference class.
-# Adapt this cell to that script's actual model-loading / embedding API once you've opened it —
-# repo layout: clip_modules/ (model), zeroshot/ (zero-shot eval harness), Zeroshot.py (entry point).
-# Skeleton below assumes a CLIP-style image/text encoder exposed as `model.encode_image` /
-# `model.encode_text`, which is the standard pattern for this class of model; confirm against
-# clip_modules/ before trusting predictions.
-
 import sys
 sys.path.insert(0, "/content/RetiZero")
+from zeroshot import CLIPRModel
 
-CANDIDATE_LABELS = [GRADE_NAMES[i] for i in range(5)]
+RETIZERO_WEIGHTS = "checkpoints/retizero_weights.pth"
 
-# from clip_modules.model import build_model   # <- confirm actual import path in clip_modules/
-# retizero_model = build_model(checkpoint="checkpoints/retizero_weights.pth").to("cuda").eval()
-# text_features = retizero_model.encode_text(CANDIDATE_LABELS)
+retizero_model = CLIPRModel(
+    vision_type="lora",
+    from_checkpoint=False,
+    weights_path=RETIZERO_WEIGHTS,
+    R=8,
+)
+_state_dict = torch.load(RETIZERO_WEIGHTS, map_location="cuda")
+retizero_model.load_state_dict(_state_dict, strict=True)
+retizero_model = retizero_model.eval()
 
-def predict_retizero(image_path):
-    '''
-    Returns an int 0-4: the CANDIDATE_LABELS index with highest image-text similarity.
-    Placeholder until wired to the real RetiZero encoder above -- see note in this cell.
-    '''
-    raise NotImplementedError(
-        "Wire this up against clip_modules/ once you've inspected RetiZero's actual "
-        "model-loading API -- it isn't a pip package, so the exact class names aren't "
-        "knowable without opening the repo interactively."
-    )
+# 5-way ICDR attempt (off-label extrapolation -- see caveat above)
+CANDIDATE_LABELS_ICDR = [GRADE_NAMES[i] for i in range(5)]
+
+# RetiZero's native 14-way categories, collapsed to a binary DR-present sanity check
+CANDIDATE_LABELS_NATIVE = [
+    "Normal", "Retinal Vein Occlusion", "Central Serous Chorioretinopathy",
+    "Non-proliferative Diabetic Retinopathy", "Proliferative Diabetic Retinopathy",
+    "Epiretinal Membrane", "Glaucoma", "Macular Hole", "Pathologic Maculopathy",
+    "Retinal Artery Occulusion", "Retinal Detachment", "Retinitis Pigmentosa",
+    "Vogt-Koyanagi-Harada (VKH) disease", "Age-related Macular Degeneration",
+]
+_DR_NATIVE_INDICES = {3, 4}  # indices of the two DR-related native labels above
+
+def predict_retizero(image_path, candidate_labels=CANDIDATE_LABELS_ICDR):
+    '''Returns the index into candidate_labels with highest image-text similarity.'''
+    image = Image.open(image_path).convert("RGB")
+    probability, _logits = retizero_model(image, candidate_labels)
+    return int(probability.argmax(-1))
+
+def predict_retizero_dr_present(image_path):
+    '''Binary sanity check using RetiZero's native 14-way categories: True if top match is DR-related.'''
+    pred_idx = predict_retizero(image_path, candidate_labels=CANDIDATE_LABELS_NATIVE)
+    return pred_idx in _DR_NATIVE_INDICES
 """)
 
 # ---------------------------------------------------------------------------
@@ -395,13 +424,19 @@ print(summary_table.to_markdown())
 md("""\
 ## 10. Notes and limitations (read before writing up results)
 
-- **Sample size.** `N_PER_GRADE = 2` (10 images total) is a pipeline smoke-test, not a result
-  you can defend in a paper. Rerun with `N_PER_GRADE = 20-30` (100-150 images) minimum, and
-  report a confidence interval on accuracy/kappa.
-- **RetiZero is zero-shot classification, not generative digit-output**, unlike Gemini and
-  MedGemma — it's being scored on a genuinely different task formulation (embedding similarity
-  vs. token generation), which is worth stating explicitly as a methodological caveat rather
-  than presenting the three numbers as directly equivalent.
+- **Sample size.** `N_PER_GRADE = 25` (125 images total) is the low end of defensible for a
+  paper. Raise it further if quota/session-length allow, and report a confidence interval on
+  accuracy/kappa rather than a bare point estimate.
+- **RetiZero is zero-shot embedding similarity, not generative digit-output**, unlike Gemini and
+  MedGemma — it's being scored on a genuinely different task formulation. Worth stating
+  explicitly rather than presenting the three numbers as directly equivalent.
+- **RetiZero's 5-way ICDR grading here is an off-label extrapolation.** Its own published demo
+  task is 14-way disease-type classification, where DR appears only as two coarse categories
+  (NPDR / PDR), not a mild/moderate/severe split. Report the native binary DR-present check
+  (`predict_retizero_dr_present`) alongside the 5-way attempt, and don't present the 5-way
+  number as validating RetiZero's severity-grading ability specifically.
+- **RetiZero and MedGemma have conflicting dependency pins** (old vs. new `torch`/`transformers`)
+  — run them in separate Colab runtimes, not the same `pip install` environment.
 - **Ground truth itself is noisy.** Published inter-grader agreement on ICDR grading across
   ophthalmologists sits at kappa 0.40-0.65 in the literature — so your "ground truth" labels
   are themselves one grader's opinion, not an infallible reference. Frame conclusions accordingly.
@@ -409,9 +444,9 @@ md("""\
   for** (unlike MedGemma/RetiZero, which are medically pretrained) — that's a legitimate and
   interesting comparison, but the write-up should say so rather than implying a fair fight
   between equivalent systems.
-- **This notebook was authored without running it end-to-end** (no Kaggle/Colab/GPU access
-  in the environment that generated it). Read through each cell before trusting it, especially
-  the RetiZero section which is a documented skeleton, not tested inference code.
+- **This notebook was authored without running it end-to-end** (no Kaggle/Colab/GPU access in
+  the environment that generated or updated it — RetiZero's API was confirmed by reading its
+  source directly, not by executing it). Read through each cell before trusting it.
 """)
 
 nb["cells"] = cells

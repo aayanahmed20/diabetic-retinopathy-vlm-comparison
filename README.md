@@ -41,14 +41,20 @@ requirements.txt                     # for local/non-Colab use
 
 ## Known gaps to close before this is publication-ready
 
-- **Sample size.** Default is `N_PER_GRADE = 2` (10 images), matching the original
-  scoping request. That's a pipeline smoke test, not a result — for anything you intend
-  to submit, raise it to 20–30 per grade (100–150 images) and report confidence intervals.
-- **RetiZero inference (Section 6 of the notebook) is a documented skeleton, not tested
-  code.** Its GitHub repo isn't a pip package — it ships a `Zeroshot.py` reference script
-  and a `clip_modules/` folder rather than a stable public API, so the exact
-  model-loading calls need to be confirmed against that script once you have GPU access
-  to actually run and inspect it.
+- **Sample size.** Default is now `N_PER_GRADE = 25` (125 images) — the low end of
+  defensible for a paper. Raise further (30-40/grade) if your Gemini quota and Colab
+  session length allow, and report a confidence interval on accuracy/kappa, not just a
+  point estimate.
+- **RetiZero inference (Section 6) is now wired to the real `CLIPRModel` API**, confirmed
+  by reading `Zeroshot.py` and `zeroshot/modeling/model.py` directly in the source repo —
+  no longer a placeholder. Two things to know before trusting its numbers:
+  - Its own published demo task is 14-way disease-*type* classification, where DR is only
+    two coarse categories (NPDR / PDR) — not a mild/moderate/severe split. The notebook
+    passes custom ICDR-grade text prompts anyway (mechanically works, since the model
+    accepts arbitrary text), but that's an off-label extrapolation and should be reported
+    as such, alongside the native binary DR-present check the notebook also computes.
+  - Its `requirements.txt` pins old `torch`/`transformers` versions that conflict with
+    MedGemma's — run Sections 5 and 6 in **separate Colab runtimes**.
 - **Ground truth caveat.** Published inter-ophthalmologist agreement on ICDR grading is
   kappa 0.40–0.65 — the "ground truth" here is one grader's label, not an infallible
   reference. Say so in the writeup.
