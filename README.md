@@ -62,7 +62,8 @@ Beyond plain accuracy, the pipeline scores each model with:
    open directly from GitHub via File > Open notebook > GitHub).
 2. Runtime > Change runtime type > **GPU** (T4 minimum - MedGemma and RetiZero need it).
 3. Add these as **Colab secrets** (key icon in the left sidebar) - never paste them into a cell:
-   - `KAGGLE_USERNAME`, `KAGGLE_KEY` - kaggle.com > Account > API > Create New Token
+   - Kaggle - **either** `KAGGLE_USERNAME` + `KAGGLE_KEY` (classic) **or** `KAGGLE_API_TOKEN`
+     (new `KGAT_...` format): kaggle.com > Account > API > Create New Token
    - `GEMINI_API_KEY` - https://aistudio.google.com/apikey
    - `HF_TOKEN` - https://huggingface.co/settings/tokens, and accept the license at
      https://huggingface.co/google/medgemma-4b-it with the same account
