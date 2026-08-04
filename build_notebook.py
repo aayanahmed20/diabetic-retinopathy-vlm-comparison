@@ -334,7 +334,8 @@ RETIZERO_LABELS = [
 
 def predict_retizero(image_path):
     image = Image.open(image_path).convert("RGB")
-    probability, _logits = retizero_model(image, RETIZERO_LABELS)
+    with torch.no_grad():
+        probability, _logits = retizero_model(image, RETIZERO_LABELS)
     return int(probability.argmax())
 """)
 
@@ -345,13 +346,34 @@ md("""\
 Each prediction is wrapped so one model's failure doesn't kill the run — failed predictions
 are recorded as `None` and dropped per-model at scoring time. Gemini API calls are spaced
 1s apart to stay polite to rate limits.
+
+**This cell checkpoints after every image** to `results/predictions.csv` and skips
+`id_code`s already in that file. If the runtime crashes or restarts partway through
+(memory pressure from running three models on one GPU is the most likely cause), just
+re-run this cell — it picks up where it left off instead of starting over. It also runs
+a GPU memory cleanup every few images to reduce the chance of that happening.
 """)
 code("""\
+import gc
 import time
 import pandas as pd
 
-results = []
-for _, row in sample_df.iterrows():
+os.makedirs(RESULTS_DIR, exist_ok=True)
+predictions_path = f"{RESULTS_DIR}/predictions.csv"
+
+if os.path.exists(predictions_path):
+    results_df = pd.read_csv(predictions_path)
+    done_ids = set(results_df["id_code"])
+    print(f"Resuming: {len(done_ids)} images already scored, skipping those.")
+else:
+    results_df = pd.DataFrame()
+    done_ids = set()
+
+results = results_df.to_dict("records")
+for i, (_, row) in enumerate(sample_df.iterrows()):
+    if row["id_code"] in done_ids:
+        continue
+
     record = {
         "id_code": row["id_code"],
         "image_path": row["image_path"],
@@ -368,12 +390,20 @@ for _, row in sample_df.iterrows():
             record[f"{model_name}_pred"] = None
             record[f"{model_name}_error"] = str(e)
     results.append(record)
+
+    # Checkpoint after every image - a crash loses at most one image's work, not the run.
+    pd.DataFrame(results).to_csv(predictions_path, index=False)
     print(f"done {row['id_code']} (GT grade {row['diagnosis']})")
+
+    # Periodic GPU memory cleanup - reduces fragmentation buildup over a long run.
+    if i % 10 == 0:
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     time.sleep(1)
 
 results_df = pd.DataFrame(results)
-os.makedirs(RESULTS_DIR, exist_ok=True)
-results_df.to_csv(f"{RESULTS_DIR}/predictions.csv", index=False)
 results_df
 """)
 
