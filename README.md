@@ -100,10 +100,12 @@ The notebook is structurally complete and the RetiZero wiring follows its upstre
 end-to-end on a GPU in this repo's authoring environment, so first run may surface
 runtime-specific issues. Known items to close before publication:
 
-- **Sample size.** Default is `N_PER_GRADE = 2` (10 images), matching the original scoping
-  request. That's a pipeline smoke test, not a result - for anything intended for
-  submission, raise it to 20-30 per grade (100-150 images) and report the bootstrap CIs.
-  One wrong prediction swings 10-image accuracy by 10 points.
+- **Sample size.** Default is now `N_PER_GRADE = 25` (125 images), a statistically
+  defensible size - raised from the original `N_PER_GRADE = 2` (10 images), which was only
+  ever a pipeline smoke test. Drop it back to 2 if you just want to verify the pipeline
+  runs end-to-end before committing GPU/API time to a full pass. Report the bootstrap CIs
+  either way; one wrong prediction still swings 10-image accuracy by 10 points, which is
+  exactly why the default changed.
 - **RetiZero dependency tension.** Its upstream repo pins torch 1.13 / transformers 4.27,
   which would break MedGemma's modern stack. This notebook deliberately runs it on the
   current Colab stack; if you hit a RetiZero-specific error, run its cells in a separate

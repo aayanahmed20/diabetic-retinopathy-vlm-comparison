@@ -49,15 +49,17 @@ graders, collected by Aravind Eye Hospital. Class distribution: 1,805 / 370 / 99
 
 ### B. Sample
 
-*[FILL IN - actual N and per-grade counts used, from `sample_df` in the notebook. State
-the random seed for reproducibility. Stratified sampling across grades 0-4, one image per
-draw seeded by `RANDOM_SEED = 42`.]*
+Stratified random sample of `N_PER_GRADE = 25` images per ICDR grade (0-4), drawn with a
+fixed random seed (`RANDOM_SEED = 42`) for reproducibility, targeting 125 images total.
+*[FILL IN - confirm the actual N and per-grade counts from `sample_df` after running the
+notebook; some grades have fewer than 25 images available in APTOS 2019 (grade 3 has only
+193 in the full dataset), so the per-grade count may be capped rather than exactly 25.]*
 
 ### C. Models and inference configuration
 
 | Model | Access | Task formulation |
 |---|---|---|
-| Gemini (`[FILL IN exact model string, e.g. gemini-2.5-flash]`) | Hosted API | Prompted generative digit output against the written ICDR rubric |
+| Gemini (`gemini-2.5-flash`, per `GEMINI_MODEL` in the notebook - update here if you change it before running) | Hosted API | Prompted generative digit output against the written ICDR rubric |
 | MedGemma (`google/medgemma-4b-it`) | Local inference, bf16, single GPU | Prompted generative digit output, identical rubric prompt |
 | RetiZero | Local inference | Zero-shot CLIP-style image-text similarity against the 5 ICDR grade-name labels |
 
@@ -154,5 +156,18 @@ submission; these are the real source works the background section draws on.]*
 ## Appendix: Exact prompt used
 
 ```
-[paste ICDR_PROMPT from the notebook here, verbatim, for reproducibility]
+You are assisting with diabetic retinopathy severity grading on a color fundus
+photograph, using the International Clinical Diabetic Retinopathy (ICDR) severity scale.
+
+Grade strictly on this rubric:
+0 = No DR: no abnormalities
+1 = Mild NPDR: microaneurysms only
+2 = Moderate NPDR: more than just microaneurysms but less than severe NPDR
+3 = Severe NPDR: any of - >20 intraretinal hemorrhages in each of 4 quadrants,
+    definite venous beading in >=2 quadrants, prominent IRMA in >=1 quadrant, no signs of PDR
+4 = Proliferative DR (PDR): neovascularization and/or vitreous/preretinal hemorrhage
+
+Respond with ONLY a single digit 0-4. No words, no punctuation, no explanation.
 ```
+
+(Copied verbatim from `ICDR_PROMPT` in the notebook. If you edit the prompt before running, update this block to match - it must stay in sync for the report to be reproducible.)

@@ -49,17 +49,17 @@ This notebook:
 - RetiZero's pretrained weights are not on pip/HF — they're a manual Google Drive download
   (linked in the RetiZero setup cell below). This notebook downloads them with `gdown`.
 
-**⚠️ Sample size note:** `N_PER_GRADE = 2` below reproduces the "10 images" scope of the
-original ask. That is *not* a statistically defensible sample for a paper — one wrong
-prediction swings overall accuracy by 10 points, and 2 images/class won't support a stable
-confusion matrix. Raise `N_PER_GRADE` to 20-30 (100-150 images total) before writing up
-numbers for submission.
+**⚠️ Sample size note:** `N_PER_GRADE = 25` below (125 images total) is the statistically
+defensible size this project's own methodology calls for. The original 10-image scope
+(`N_PER_GRADE = 2`) was a pipeline smoke test only — one wrong prediction there swings overall
+accuracy by 10 points and won't support a stable confusion matrix. Drop `N_PER_GRADE` back to
+2 if you just want a fast smoke test of the pipeline before committing to a full run.
 """)
 
 # ---------------------------------------------------------------------------
 md("## 0. Configuration")
 code("""\
-N_PER_GRADE = 2                       # images sampled per ICDR grade (0-4). 2 -> 10 total images, as requested.
+N_PER_GRADE = 25                      # images sampled per ICDR grade (0-4). 25 -> 125 total images (statistically defensible; drop to 2 for a 10-image smoke test).
 RANDOM_SEED = 42                       # change for a different random draw; keep fixed for reproducibility
 GEMINI_MODEL = "gemini-2.5-flash"      # any current Gemini vision-capable model
 MEDGEMMA_MODEL_ID = "google/medgemma-4b-it"
@@ -499,9 +499,11 @@ print("Downloaded results.tar.gz -> extract into the repo root (creates results/
 md("""\
 ## 12. Notes and limitations (read before writing up results)
 
-- **Sample size.** `N_PER_GRADE = 2` (10 images total) is a pipeline smoke-test, not a result
-  you can defend in a paper. Rerun with `N_PER_GRADE = 20-30` (100-150 images) minimum — the
-  bootstrap CIs in Section 9 will make this painfully obvious.
+- **Sample size.** `N_PER_GRADE = 25` (125 images total) is set as the default because it's
+  the statistically defensible size this project's own methodology calls for. If you switch
+  back to `N_PER_GRADE = 2` (10 images, the original smoke-test scope) for a quick pipeline
+  check, don't report those numbers as a result — the bootstrap CIs in Section 9 will make
+  why painfully obvious.
 - **RetiZero is zero-shot similarity classification, not generative digit-output**, unlike
   Gemini and MedGemma — it's being scored on a genuinely different task formulation
   (embedding similarity vs. token generation), which is worth stating explicitly as a
