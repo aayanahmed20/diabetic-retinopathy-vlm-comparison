@@ -24,36 +24,25 @@ def code(text):
 md("""\
 # Diabetic Retinopathy Grading: Gemini vs. MedGemma vs. RetiZero
 
-**Comparative evaluation of three vision-language models on ICDR-graded fundus images (APTOS 2019)**
+**Comparing three vision-language models on ICDR-graded fundus images (APTOS 2019)**
 
-This notebook:
-1. Downloads the APTOS 2019 Blindness Detection dataset from Kaggle
-2. Draws a stratified random sample of fundus images across ICDR grades 0-4
-3. Runs inference with three models:
-   - **Gemini** (Google's hosted multimodal API — `google-genai` SDK)
-   - **MedGemma** (Google's open-weight medical VLM — `google/medgemma-4b-it` via Hugging Face)
-   - **RetiZero** (open retinal foundation model, zero-shot fundus disease recognition)
-4. Scores each model against ground-truth ICDR grades: accuracy (with a bootstrap
-   95% confidence interval), quadratic-weighted Cohen's kappa (the standard metric for
-   ordinal DR grading), mean absolute error, and per-class confusion matrices
-5. Writes results to `results/predictions.csv`, `results/metrics_summary.json`,
-   `results/summary_table.csv`, and `results/confusion_matrices.png`
+This notebook downloads the dataset, samples images across ICDR grades 0-4, runs all
+three models, and scores each one (accuracy + 95% CI, quadratic-weighted kappa, MAE,
+confusion matrices) — writing everything to `results/`.
 
 **Before you run this:**
-- Runtime → Change runtime type → **GPU** (T4 or better) — required for MedGemma and RetiZero
-- You will need, as **Colab secrets** (key icon in the left sidebar), NOT hardcoded values:
-  - `GEMINI_API_KEY` — from https://aistudio.google.com/apikey
-  - `HF_TOKEN` — from https://huggingface.co/settings/tokens, and you must accept
-    MedGemma's license at https://huggingface.co/google/medgemma-4b-it first
-  - `KAGGLE_USERNAME` and `KAGGLE_KEY` — from your Kaggle account → Settings → API → Create New Token
-- RetiZero's pretrained weights are not on pip/HF — they're a manual Google Drive download
-  (linked in the RetiZero setup cell below). This notebook downloads them with `gdown`.
+- Runtime → Change runtime type → **GPU** (T4 or better) — needed for MedGemma and RetiZero
+- Add these as **Colab secrets** (🔑 icon, left sidebar), never hardcoded in a cell:
+  `GEMINI_API_KEY` ([get one](https://aistudio.google.com/apikey)), `HF_TOKEN`
+  ([get one](https://huggingface.co/settings/tokens) — also accept MedGemma's license at
+  its [model page](https://huggingface.co/google/medgemma-4b-it) first), and
+  `KAGGLE_USERNAME` + `KAGGLE_KEY` (kaggle.com → Account → API → Create New Token)
+- RetiZero's weights aren't on pip/HF — they're a Google Drive download this notebook
+  fetches automatically with `gdown`
 
-**⚠️ Sample size note:** `N_PER_GRADE = 25` below (125 images total) is the statistically
-defensible size this project's own methodology calls for. The original 10-image scope
-(`N_PER_GRADE = 2`) was a pipeline smoke test only — one wrong prediction there swings overall
-accuracy by 10 points and won't support a stable confusion matrix. Drop `N_PER_GRADE` back to
-2 if you just want a fast smoke test of the pipeline before committing to a full run.
+**Sample size:** `N_PER_GRADE = 25` below (125 images total) is the statistically
+defensible default. Drop it to `2` only for a quick smoke test of the pipeline — don't
+report those numbers as a result.
 """)
 
 # ---------------------------------------------------------------------------
@@ -269,22 +258,16 @@ def predict_medgemma(image_path):
 md("""\
 ## 7. Model 3 — RetiZero (zero-shot retinal foundation model)
 
-RetiZero is *not* a generative model — it is a CLIP-style vision-language model: it embeds
-the image and a set of candidate text labels, then scores their cosine similarity. So
-instead of asking it to "write a digit", we hand it the 5 ICDR grade names as candidate
-labels and take the argmax of the similarity distribution. This is a mechanically different
-task formulation from Gemini/MedGemma and should be reported as such.
+RetiZero isn't generative — it's CLIP-style: it embeds the image and 5 candidate ICDR
+label strings, then takes the argmax of their cosine similarity. That's a mechanically
+different task than "write a digit" and should be reported as such, not as a fair
+three-way tie.
 
-**Weight download:** RetiZero's pretrained weights live on Google Drive (linked in the
-[repo README](https://github.com/LooKing9218/RetiZero)); `gdown` fetches them by file ID.
-
-**Dependency note:** RetiZero's own `requirements.txt` pins an old torch/transformers stack
-that would *break* MedGemma's modern transformers. We intentionally do NOT downgrade the
-runtime; the vendored ViT code (RETFound/LoRA) is written against standard torch APIs and
-loads fine on a current Colab torch. If RetiZero errors on your runtime, run this notebook's
-RetiZero cells in a separate runtime before/after the MedGemma cells and combine the CSVs
-in Section 9 — the pipeline is built so predictions survive independently in
-`results/predictions.csv`.
+**Dependency note:** RetiZero's own `requirements.txt` pins an old torch/transformers
+stack that would break MedGemma's modern one — we deliberately run it on the current
+Colab stack instead (its ViT code uses standard torch APIs and loads fine). If it errors
+on your runtime, run RetiZero's cells separately and merge the CSVs afterward —
+`results/predictions.csv` is checkpointed per-image, so this works cleanly.
 """)
 code("""\
 import os, sys
@@ -529,28 +512,15 @@ print("Downloaded results.tar.gz -> extract into the repo root (creates results/
 md("""\
 ## 12. Notes and limitations (read before writing up results)
 
-- **Sample size.** `N_PER_GRADE = 25` (125 images total) is set as the default because it's
-  the statistically defensible size this project's own methodology calls for. If you switch
-  back to `N_PER_GRADE = 2` (10 images, the original smoke-test scope) for a quick pipeline
-  check, don't report those numbers as a result — the bootstrap CIs in Section 9 will make
-  why painfully obvious.
-- **RetiZero is zero-shot similarity classification, not generative digit-output**, unlike
-  Gemini and MedGemma — it's being scored on a genuinely different task formulation
-  (embedding similarity vs. token generation), which is worth stating explicitly as a
-  methodological caveat rather than presenting the three numbers as directly equivalent.
-- **Ground truth itself is noisy.** Published inter-grader agreement on ICDR grading across
-  ophthalmologists sits at kappa 0.40-0.65 in the literature — so your "ground truth" labels
-  are themselves one grader's opinion, not an infallible reference. Frame conclusions accordingly.
-- **Gemini is a general-purpose model being asked to do a specialist task it wasn't trained
-  for** (unlike MedGemma/RetiZero, which are medically pretrained) — that's a legitimate and
-  interesting comparison, but the write-up should say so rather than implying a fair fight
-  between equivalent systems.
-- **Dependency tension.** RetiZero's upstream repo pins torch 1.13/transformers 4.27; this
-  notebook deliberately runs it on the modern Colab stack to coexist with MedGemma. If you
-  hit a RetiZero-specific error on your runtime, run it in a separate runtime and merge CSVs.
-- **This notebook was authored and validated for structure, not executed end-to-end on a GPU**
-  (no Kaggle/Colab/GPU access in the authoring environment). The RetiZero wiring follows its
-  upstream `Zeroshot.py`; read the cell output carefully on first run.
+Quick recap for the write-up — see the README for the full version:
+
+- **Ground truth is one grader's opinion, not an infallible reference** — published
+  inter-ophthalmologist ICDR agreement sits at kappa 0.40-0.65. Frame conclusions accordingly.
+- **Gemini is a generalist doing a specialist's task**; MedGemma and RetiZero were both
+  medically pretrained. Say so rather than presenting three equivalent peers.
+- **This notebook is structurally complete but not yet run end-to-end on a GPU** (no
+  GPU/Kaggle access in the authoring environment) — the RetiZero wiring was checked
+  line-by-line against its upstream source, but budget time for first-run surprises.
 """)
 
 nb["cells"] = cells
