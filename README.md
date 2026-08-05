@@ -3,7 +3,6 @@
 A mini research project comparing three vision-language models on diabetic retinopathy
 (DR) severity grading, scored against the [APTOS 2019 Blindness
 Detection](https://www.kaggle.com/competitions/aptos2019-blindness-detection) dataset.
-Built for an IEEE-style submission.
 
 ## Why this exists
 
