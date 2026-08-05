@@ -72,6 +72,10 @@ budget time for first-run surprises. Three things to keep in mind before writing
 
 ## ICDR severity scale
 
+![Schematic illustration of the ICDR 0-4 severity scale, showing progressively more microaneurysms, hemorrhages, and neovascularization](docs/assets/icdr_scale_schematic.png)
+
+*Original schematic for reference, not real patient photographs — actual dataset images can't be redistributed under APTOS 2019's Kaggle terms (see License below).*
+
 | Grade | Name | What it looks like |
 |---|---|---|
 | 0 | No DR | No abnormalities |
