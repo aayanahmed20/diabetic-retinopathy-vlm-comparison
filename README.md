@@ -45,28 +45,6 @@ Python / Google Colab (GPU runtime) · `google-genai` (Gemini) · Hugging Face
 `transformers` + `torch` (MedGemma) · RetiZero's own `zeroshot.CLIPRModel` · `kaggle`
 CLI · `pandas`, `scikit-learn`, `seaborn`
 
-## Getting started
-
-1. Open `notebooks/DR_VLM_Comparison.ipynb` in **Google Colab**.
-2. Runtime → Change runtime type → **GPU** (T4 minimum).
-3. Add as **Colab secrets** (🔑 icon, left sidebar) — never paste into a cell:
-   - `KAGGLE_USERNAME` + `KAGGLE_KEY` (kaggle.com → Account → API → Create New Token)
-   - `GEMINI_API_KEY` (https://aistudio.google.com/apikey)
-   - `HF_TOKEN` (https://huggingface.co/settings/tokens — also accept the license at
-     https://huggingface.co/google/medgemma-4b-it with the same account)
-4. Run all cells top to bottom. RetiZero's weights (~a few hundred MB) download
-   automatically via `gdown`.
-5. The last cell packages `results/` into a tarball and downloads it — extract into the
-   repo root.
-6. Fill `reports/report_template.md` with the numbers from `results/metrics_summary.json`.
-
-To regenerate the notebook from its source instead of editing the `.ipynb` JSON by hand:
-
-```bash
-pip install nbformat
-python build_notebook.py
-```
-
 ## Project structure
 
 - `notebooks/DR_VLM_Comparison.ipynb` — the full pipeline, run this in Colab

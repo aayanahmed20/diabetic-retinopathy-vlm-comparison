@@ -30,16 +30,6 @@ This notebook downloads the dataset, samples images across ICDR grades 0-4, runs
 three models, and scores each one (accuracy + 95% CI, quadratic-weighted kappa, MAE,
 confusion matrices) — writing everything to `results/`.
 
-**Before you run this:**
-- Runtime → Change runtime type → **GPU** (T4 or better) — needed for MedGemma and RetiZero
-- Add these as **Colab secrets** (🔑 icon, left sidebar), never hardcoded in a cell:
-  `GEMINI_API_KEY` ([get one](https://aistudio.google.com/apikey)), `HF_TOKEN`
-  ([get one](https://huggingface.co/settings/tokens) — also accept MedGemma's license at
-  its [model page](https://huggingface.co/google/medgemma-4b-it) first), and
-  `KAGGLE_USERNAME` + `KAGGLE_KEY` (kaggle.com → Account → API → Create New Token)
-- RetiZero's weights aren't on pip/HF — they're a Google Drive download this notebook
-  fetches automatically with `gdown`
-
 **Sample size:** `N_PER_GRADE = 25` below (125 images total) is the statistically
 defensible default. Drop it to `2` only for a quick smoke test of the pipeline — don't
 report those numbers as a result.
@@ -77,9 +67,7 @@ code("""\
 md("""\
 ## 2. Check your Colab secrets
 
-Every key is read from the **Colab secrets manager** (the 🔑 key icon in the left sidebar),
-never pasted into a cell. This cell fails loudly and tells you exactly which secret is
-missing, so you don't discover it halfway through the run.
+This cell fails loudly and names any missing secret, rather than failing midway through the run.
 """)
 code("""\
 from google.colab import userdata
