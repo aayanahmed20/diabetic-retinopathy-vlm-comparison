@@ -38,6 +38,19 @@ never guesswork. Each model gets scored on:
 - **Accuracy**, with a bootstrap 95% confidence interval (honest uncertainty at small N)
 - **Mean absolute error** in grade steps, plus per-class precision/recall and confusion matrices
 
+Every row in `results/predictions.csv` pairs one image's ground-truth grade (the dataset's
+own label) against all three models' predictions, so agreement and disagreement are visible
+per image, not just in the aggregate metrics. Example of the format (illustrative values
+below, not a real run):
+
+| id_code | ground_truth | gemini_pred | medgemma_pred | retizero_pred |
+| --- | --- | --- | --- | --- |
+| 002c21358ce6 | 0 | 0 | 0 | 0 |
+| 0117d2f78655 | 2 | 3 | 2 | 1 |
+| 01e0e6c1fcb0 | 4 | 4 | 3 | 4 |
+| 025c4d3ba4b7 | 1 | 0 | 1 | 2 |
+| 03163d1cebde | 3 | 2 | 3 | 3 |
+
 ## Tech stack
 
 Python / Google Colab (GPU runtime) · `google-genai` (Gemini) · Hugging Face

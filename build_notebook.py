@@ -48,6 +48,8 @@ RETIZERO_WEIGHTS_PATH = "/content/RetiZero/checkpoints/retizero_weights.pth"
 CONTENT_ROOT = "/content"
 RESULTS_DIR = "/content/results"
 
+# Maps the integer ICDR grade (as stored in the dataset's "diagnosis" column) to its
+# clinical name, used for plot titles and the printed class distribution below.
 GRADE_NAMES = {
     0: "No DR",
     1: "Mild NPDR",
@@ -60,6 +62,8 @@ GRADE_NAMES = {
 # ---------------------------------------------------------------------------
 md("## 1. Install dependencies")
 code("""\
+# kaggle: dataset download | google-genai: Gemini API | transformers/accelerate/torch/torchvision: MedGemma + RetiZero
+# pillow/pandas/scikit-learn/matplotlib/seaborn: image I/O, data handling, metrics, plots | gdown: RetiZero weight download | kornia: RetiZero image transforms
 !pip install -q kaggle google-genai transformers accelerate torch torchvision pillow pandas scikit-learn matplotlib seaborn gdown kornia
 """)
 
@@ -74,6 +78,8 @@ from google.colab import userdata
 
 REQUIRED_SECRETS = ["GEMINI_API_KEY", "HF_TOKEN", "KAGGLE_USERNAME", "KAGGLE_KEY"]
 
+# userdata.get() raises if a secret isn't set — catch that per-name so one missing
+# secret is reported clearly instead of stopping at the first one.
 for name in REQUIRED_SECRETS:
     try:
         userdata.get(name)
@@ -91,9 +97,13 @@ Uses your Kaggle API credentials, read from Colab secrets — never hardcode `KA
 code("""\
 import os
 
+# Kaggle's CLI reads credentials from these two env vars — set them from Colab secrets
+# rather than writing a kaggle.json file to disk.
 os.environ["KAGGLE_USERNAME"] = userdata.get("KAGGLE_USERNAME")
 os.environ["KAGGLE_KEY"] = userdata.get("KAGGLE_KEY")
 
+# Downloads the competition's zip (train/test images + train.csv of ground-truth grades),
+# then unzips it into the same folder. --force re-downloads if it's already partially there.
 !kaggle competitions download -c aptos2019-blindness-detection -p {CONTENT_ROOT}/aptos2019 --force
 !unzip -q -o {CONTENT_ROOT}/aptos2019/aptos2019-blindness-detection.zip -d {CONTENT_ROOT}/aptos2019
 """)
@@ -102,6 +112,8 @@ code("""\
 import pandas as pd
 
 train_csv = pd.read_csv("/content/aptos2019/train.csv")  # columns: id_code, diagnosis
+# Build the full path to each image file and attach a human-readable grade name,
+# so downstream cells don't need to reconstruct either.
 train_csv["image_path"] = train_csv["id_code"].apply(
     lambda x: f"/content/aptos2019/train_images/{x}.png"
 )
@@ -116,6 +128,9 @@ md("""\
 ## 4. Stratified random sample across ICDR grades 0-4
 """)
 code("""\
+# Group by grade and draw N_PER_GRADE from each group independently — this is what makes
+# the sample "stratified": without it, a random draw from the raw dataset would be
+# dominated by grade 0 (the most common class) and barely include grade 3/4.
 sample_df = (
     train_csv
     .groupby("diagnosis", group_keys=False)
@@ -133,16 +148,19 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 
+# Lay the sample out in a grid, 5 images per row, as many rows as needed.
 n = len(sample_df)
 cols = 5 if n >= 5 else n
 rows = math.ceil(n / cols)
 
 fig, axes = plt.subplots(rows, cols, figsize=(cols * 3.6, rows * 3.0))
-axes = axes.ravel() if isinstance(axes, np.ndarray) else [axes]
+axes = axes.ravel() if isinstance(axes, np.ndarray) else [axes]  # flatten to 1D regardless of grid shape
 
 for ax in axes:
-    ax.axis("off")
+    ax.axis("off")  # hide axes for every slot, including any unused trailing ones
 
+# Each image's title shows its ground-truth grade, so this grid doubles as a visual
+# ground-truth reference — compare it against model predictions later in the notebook.
 for ax, (_, row) in zip(axes, sample_df.iterrows()):
     img = Image.open(row["image_path"])
     ax.imshow(img)
@@ -166,6 +184,9 @@ from google.genai import types
 
 gemini_client = genai.Client(api_key=userdata.get("GEMINI_API_KEY"))
 
+# The rubric text below is the actual ICDR grading criteria, not a paraphrase — giving
+# Gemini the same definitions a human grader uses is what makes its answer comparable
+# to the dataset's ground truth (and to MedGemma/RetiZero, which grade against the same scale).
 ICDR_PROMPT = '''You are assisting with diabetic retinopathy severity grading on a color fundus
 photograph, using the International Clinical Diabetic Retinopathy (ICDR) severity scale.
 
@@ -180,6 +201,8 @@ Grade strictly on this rubric:
 Respond with ONLY a single digit 0-4. No words, no punctuation, no explanation.'''
 
 def predict_gemini(image_path):
+    # Send the raw image bytes + prompt in one call; Gemini's vision models accept
+    # image parts directly, no separate encoding step needed.
     with open(image_path, "rb") as f:
         image_bytes = f.read()
     response = gemini_client.models.generate_content(
@@ -189,6 +212,8 @@ def predict_gemini(image_path):
             ICDR_PROMPT,
         ],
     )
+    # The prompt asks for a bare digit, but models occasionally add stray text anyway —
+    # pulling the first digit out of the response is more robust than assuming int(text) works.
     text = response.text.strip()
     digits = [c for c in text if c.isdigit()]
     return int(digits[0]) if digits else None
@@ -207,6 +232,9 @@ from transformers import AutoProcessor, AutoModelForImageTextToText
 
 os.environ["HF_TOKEN"] = userdata.get("HF_TOKEN")
 
+# AutoProcessor handles both image preprocessing and text tokenization for MedGemma.
+# bfloat16 + device_map="auto" loads the 4B model in half precision, spread across
+# whatever GPU memory Colab gives you — full fp32 wouldn't fit on a T4.
 medgemma_processor = AutoProcessor.from_pretrained(MEDGEMMA_MODEL_ID, token=os.environ["HF_TOKEN"])
 medgemma_model = AutoModelForImageTextToText.from_pretrained(
     MEDGEMMA_MODEL_ID,
@@ -219,6 +247,8 @@ medgemma_model = AutoModelForImageTextToText.from_pretrained(
 code("""\
 def predict_medgemma(image_path):
     image = Image.open(image_path).convert("RGB")
+    # MedGemma expects a chat-style message list, same format as text-only chat models,
+    # with the image and prompt as separate content items in one user turn.
     messages = [
         {
             "role": "user",
@@ -228,13 +258,18 @@ def predict_medgemma(image_path):
             ],
         }
     ]
+    # apply_chat_template turns that message list into model-ready input tensors in one
+    # call (formatting the prompt, tokenizing, and preparing the image together).
     inputs = medgemma_processor.apply_chat_template(
         messages, add_generation_prompt=True, tokenize=True,
         return_dict=True, return_tensors="pt"
     ).to(medgemma_model.device, dtype=torch.bfloat16)
 
+    # inference_mode disables gradient tracking (we're not training); max_new_tokens=8 is
+    # plenty for a single-digit answer, and do_sample=False makes output deterministic.
     with torch.inference_mode():
         output = medgemma_model.generate(**inputs, max_new_tokens=8, do_sample=False)
+    # Slice off the input tokens so only the newly generated text is decoded.
     decoded = medgemma_processor.decode(
         output[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True
     ).strip()
@@ -260,11 +295,14 @@ on your runtime, run RetiZero's cells separately and merge the CSVs afterward �
 code("""\
 import os, sys
 
+# Clone the upstream RetiZero repo (only once — reuse it if this cell is re-run).
 if not os.path.isdir("/content/RetiZero"):
     !git clone -q {RETIZERO_REPO} /content/RetiZero
 else:
     print("RetiZero repo already cloned")
 
+# The pretrained weights aren't in the repo (too large for git) or on pip/HF — they're
+# a Google Drive file, downloaded here by ID with gdown.
 os.makedirs("/content/RetiZero/checkpoints", exist_ok=True)
 if not os.path.exists(RETIZERO_WEIGHTS_PATH):
     !gdown {RETIZERO_WEIGHTS_GDRIVE_ID} -O {RETIZERO_WEIGHTS_PATH}
@@ -273,12 +311,14 @@ else:
 """)
 
 code("""\
-os.chdir("/content/RetiZero")
+os.chdir("/content/RetiZero")       # RetiZero's own code does relative imports, so run from its root
 sys.path.insert(0, "/content/RetiZero")
 
 import torch
-from zeroshot import CLIPRModel
+from zeroshot import CLIPRModel     # RetiZero's own package (zeroshot/__init__.py re-exports this)
 
+# from_checkpoint=False here because we load the weights ourselves right below via
+# load_state_dict, rather than having the constructor fetch them.
 retizero_model = CLIPRModel(
     vision_type="lora",
     from_checkpoint=False,          # weights are applied below via load_state_dict
@@ -287,7 +327,7 @@ retizero_model = CLIPRModel(
 )
 state_dict = torch.load(RETIZERO_WEIGHTS_PATH, map_location="cpu")
 retizero_model.load_state_dict(state_dict, strict=True)
-retizero_model.eval()
+retizero_model.eval()               # disables dropout/batchnorm training behavior for inference
 print("RetiZero loaded successfully")
 """)
 
@@ -305,6 +345,8 @@ RETIZERO_LABELS = [
 
 def predict_retizero(image_path):
     image = Image.open(image_path).convert("RGB")
+    # forward() embeds the image and the 5 label strings, then returns their similarity
+    # as (probability, logits) numpy arrays — argmax over probability gives the predicted grade.
     with torch.no_grad():
         probability, _logits = retizero_model(image, RETIZERO_LABELS)
     return int(probability.argmax())
@@ -332,6 +374,8 @@ import pandas as pd
 os.makedirs(RESULTS_DIR, exist_ok=True)
 predictions_path = f"{RESULTS_DIR}/predictions.csv"
 
+# Resume support: if predictions.csv already exists (e.g. from a prior partial run),
+# load it and skip any id_code already scored instead of starting from zero.
 if os.path.exists(predictions_path):
     results_df = pd.read_csv(predictions_path)
     done_ids = set(results_df["id_code"])
@@ -345,6 +389,8 @@ for i, (_, row) in enumerate(sample_df.iterrows()):
     if row["id_code"] in done_ids:
         continue
 
+    # ground_truth here is the dataset's own label for this image — this is what every
+    # model's prediction gets compared against in the next section.
     record = {
         "id_code": row["id_code"],
         "image_path": row["image_path"],
@@ -355,6 +401,9 @@ for i, (_, row) in enumerate(sample_df.iterrows()):
         ("medgemma", predict_medgemma),
         ("retizero", predict_retizero),
     ]:
+        # Each model call is isolated in its own try/except: one model erroring on one
+        # image (rate limit, OOM, bad response) doesn't stop the other two models or
+        # abort the whole run — it's just recorded as a missing prediction.
         try:
             record[f"{model_name}_pred"] = predict_fn(row["image_path"])
         except Exception as e:
@@ -372,7 +421,7 @@ for i, (_, row) in enumerate(sample_df.iterrows()):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    time.sleep(1)
+    time.sleep(1)  # be polite to the Gemini API's rate limit
 
 results_df = pd.DataFrame(results)
 results_df
@@ -406,7 +455,10 @@ MODELS = ["gemini_pred", "medgemma_pred", "retizero_pred"]
 metrics_summary = {}
 
 def bootstrap_ci(y_true, y_pred, n_boot=1000, seed=RANDOM_SEED):
-    # Percentile bootstrap 95% CI for accuracy.
+    # Percentile bootstrap 95% CI for accuracy: resample the predictions (with
+    # replacement) n_boot times, compute accuracy each time, and take the 2.5th/97.5th
+    # percentiles of that distribution as the interval. This is what makes the CI
+    # honest about small-sample uncertainty rather than just reporting a point estimate.
     rng = np.random.default_rng(seed)
     y_true = np.asarray(y_true)
     y_pred = np.asarray(y_pred)
@@ -417,6 +469,8 @@ def bootstrap_ci(y_true, y_pred, n_boot=1000, seed=RANDOM_SEED):
 
 for model_col in MODELS:
     model_name = model_col.replace("_pred", "")
+    # Drop rows where this model's prediction is missing (failed calls from the run
+    # loop above) — each model is scored only on the images it actually predicted.
     valid = results_df.dropna(subset=[model_col])
     if len(valid) == 0:
         metrics_summary[model_name] = {"error": "no valid predictions"}
@@ -431,6 +485,8 @@ for model_col in MODELS:
         "n_total": int(len(results_df)),
         "accuracy": round(accuracy_score(y_true, y_pred), 4),
         "accuracy_95ci": list(acc_ci),
+        # weights="quadratic" is what makes this ordinal-aware: a true grade 4 predicted
+        # as grade 0 costs more than a true grade 4 predicted as grade 3.
         "quadratic_weighted_kappa": round(cohen_kappa_score(y_true, y_pred, weights="quadratic"), 4),
         "mean_absolute_error_grades": round(mean_absolute_error(y_true, y_pred), 4),
     }
@@ -448,6 +504,8 @@ pd.DataFrame(metrics_summary).T
 code("""\
 import seaborn as sns
 
+# One confusion matrix per model, side by side, so grading errors (e.g. always confusing
+# grade 2 and 3) are visible at a glance rather than buried in the summary metrics.
 fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 for ax, model_col in zip(axes, MODELS):
     model_name = model_col.replace("_pred", "")
@@ -470,6 +528,8 @@ plt.show()
 # ---------------------------------------------------------------------------
 md("## 10. Export a results table for the report")
 code("""\
+# Same numbers as metrics_summary.json, reshaped into a table (one row per model) and
+# printed as Markdown so it can be pasted straight into reports/report_template.md.
 summary_table = pd.DataFrame(metrics_summary).T
 summary_table.to_csv(f"{RESULTS_DIR}/summary_table.csv")
 print(summary_table.to_markdown())
@@ -487,13 +547,15 @@ into one tarball and triggers a browser download. Extract it into the repo root 
 code("""\
 import tarfile
 
+# Bundle everything the write-up needs into one file so there's a single download instead
+# of pulling each artifact out of the Colab file browser individually.
 tar_path = "/content/results.tar.gz"
 with tarfile.open(tar_path, "w:gz") as tar:
     tar.add(RESULTS_DIR, arcname="results")
     tar.add("/content/sample_grid.png", arcname="sample_grid.png")
 
 from google.colab import files
-files.download(tar_path)
+files.download(tar_path)  # triggers a browser download in Colab
 print("Downloaded results.tar.gz -> extract into the repo root (creates results/)")
 """)
 
