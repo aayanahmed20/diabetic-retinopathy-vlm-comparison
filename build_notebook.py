@@ -128,16 +128,15 @@ md("""\
 ## 4. Stratified random sample across ICDR grades 0-4
 """)
 code("""\
-# Group by grade and draw N_PER_GRADE from each group independently — this is what makes
-# the sample "stratified": without it, a random draw from the raw dataset would be
+# Sample N_PER_GRADE rows from each grade independently and concatenate — this is what
+# makes the sample "stratified": without it, a random draw from the raw dataset would be
 # dominated by grade 0 (the most common class) and barely include grade 3/4.
-sample_df = (
-    train_csv
-    .groupby("diagnosis", group_keys=False)
-    .apply(lambda g: g.sample(n=min(N_PER_GRADE, len(g)), random_state=RANDOM_SEED))
-    .reset_index(drop=True)
-)
-sample_df = sample_df.sample(frac=1, random_state=RANDOM_SEED).reset_index(drop=True)  # shuffle
+sample_df = pd.concat([
+    train_csv[train_csv["diagnosis"] == grade].sample(
+        n=min(N_PER_GRADE, (train_csv["diagnosis"] == grade).sum()), random_state=RANDOM_SEED
+    )
+    for grade in sorted(train_csv["diagnosis"].unique())
+]).sample(frac=1, random_state=RANDOM_SEED).reset_index(drop=True)  # shuffle after stratifying
 print(f"Sampled {len(sample_df)} images:")
 sample_df[["id_code", "diagnosis", "grade_name"]]
 """)
