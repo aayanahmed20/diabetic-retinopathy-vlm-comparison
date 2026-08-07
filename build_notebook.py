@@ -40,7 +40,7 @@ md("## 0. Configuration")
 code("""\
 N_PER_GRADE = 25                      # images sampled per ICDR grade (0-4). 25 -> 125 total images (statistically defensible; drop to 2 for a 10-image smoke test).
 RANDOM_SEED = 42                       # change for a different random draw; keep fixed for reproducibility
-GEMINI_MODEL = "gemini-2.5-flash"      # any current Gemini vision-capable model
+GEMINI_MODEL = "gemini-3.5-flash"      # current stable Gemini vision model (gemini-2.5-flash is being retired Oct 2026 -- already seeing early "model not found" errors in the wild, so don't use it)
 MEDGEMMA_MODEL_ID = "google/medgemma-4b-it"
 RETIZERO_REPO = "https://github.com/LooKing9218/RetiZero.git"
 RETIZERO_WEIGHTS_GDRIVE_ID = "14bMmnefO73_NL1Xc4x0A5qFNbuI7GqKM"  # from the RetiZero README
@@ -307,6 +307,23 @@ if not os.path.exists(RETIZERO_WEIGHTS_PATH):
     !gdown {RETIZERO_WEIGHTS_GDRIVE_ID} -O {RETIZERO_WEIGHTS_PATH}
 else:
     print("Weights already present")
+
+# Sanity check: a large Google Drive file sometimes serves an HTML "can't scan this
+# file for viruses" warning page instead of the actual file. gdown usually handles
+# this automatically, but if it doesn't, torch.load() a few cells from now fails with
+# a confusing pickle error -- this catches it immediately with a clear message instead.
+_size_mb = os.path.getsize(RETIZERO_WEIGHTS_PATH) / 1e6 if os.path.exists(RETIZERO_WEIGHTS_PATH) else 0
+if _size_mb < 10:
+    with open(RETIZERO_WEIGHTS_PATH, "rb") as f:
+        _head = f.read(200)
+    raise RuntimeError(
+        f"Downloaded weights file is only {_size_mb:.2f} MB -- this is almost certainly "
+        f"not the real checkpoint (expect ~100s of MB). First bytes: {_head[:200]!r}\\n"
+        "This usually means Google Drive served an HTML warning page instead of the file. "
+        "Delete the file and retry, or download it manually from the RetiZero README's "
+        "link and upload it to the path in RETIZERO_WEIGHTS_PATH above."
+    )
+print(f"Weights file OK: {_size_mb:.0f} MB")
 """)
 
 code("""\
