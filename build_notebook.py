@@ -90,22 +90,72 @@ for name in REQUIRED_SECRETS:
 
 # ---------------------------------------------------------------------------
 md("""\
-## 3. Download the APTOS 2019 dataset from Kaggle
+## 3. Get the APTOS 2019 dataset
 
-Uses your Kaggle API credentials, read from Colab secrets — never hardcode `KAGGLE_KEY` in a cell.
+Two ways to get the data in — use whichever actually works for you. The cell below tries
+both automatically, in this order:
+
+**Option A: Kaggle API** (works if `KAGGLE_USERNAME`/`KAGGLE_KEY` are set as Colab secrets
+*and* you've accepted the competition's rules at
+[kaggle.com/competitions/aptos2019-blindness-detection/rules](https://www.kaggle.com/competitions/aptos2019-blindness-detection/rules)
+— the API returns 401 Unauthorized until you do this once, in a browser, even with valid keys).
+
+**Option B: manual upload** (use this if the API keeps failing). In a browser, on the
+[competition's Data tab](https://www.kaggle.com/competitions/aptos2019-blindness-detection/data),
+click **Download All** to get `aptos2019-blindness-detection.zip` (a few GB — this is the
+full image set, not just the CSVs). Then get that zip file into Colab one of two ways:
+
+- **Google Drive (recommended)** — upload the zip to your Drive, then run:
+  ```python
+  from google.colab import drive
+  drive.mount("/content/drive")
+  ```
+  in a new cell above this one. Once mounted, the cell below will find the zip
+  automatically at `/content/drive/MyDrive/aptos2019-blindness-detection.zip`. This
+  survives a runtime restart, so you only upload once even across multiple sessions.
+- **Direct upload** — use the Files panel (folder icon, left sidebar) to upload the zip
+  straight into `/content/`. Faster to set up, but Colab deletes it when the runtime
+  disconnects, so you'd need to re-upload after any restart.
 """)
 code("""\
 import os
 
-# Kaggle's CLI reads credentials from these two env vars — set them from Colab secrets
-# rather than writing a kaggle.json file to disk.
-os.environ["KAGGLE_USERNAME"] = userdata.get("KAGGLE_USERNAME")
-os.environ["KAGGLE_KEY"] = userdata.get("KAGGLE_KEY")
+CANDIDATE_ZIPS = [
+    "/content/drive/MyDrive/aptos2019-blindness-detection.zip",  # Option B, Drive-mounted
+    "/content/aptos2019-blindness-detection.zip",                # Option B, direct upload
+    f"{CONTENT_ROOT}/aptos2019/aptos2019-blindness-detection.zip",  # Option A, API download
+]
 
-# Downloads the competition's zip (train/test images + train.csv of ground-truth grades),
-# then unzips it into the same folder. --force re-downloads if it's already partially there.
-!kaggle competitions download -c aptos2019-blindness-detection -p {CONTENT_ROOT}/aptos2019 --force
-!unzip -q -o {CONTENT_ROOT}/aptos2019/aptos2019-blindness-detection.zip -d {CONTENT_ROOT}/aptos2019
+os.makedirs(f"{CONTENT_ROOT}/aptos2019", exist_ok=True)
+_zip_path = next((p for p in CANDIDATE_ZIPS if os.path.exists(p)), None)
+
+if _zip_path is None:
+    # No manually-provided zip found -- try the Kaggle API. Reads credentials from Colab
+    # secrets rather than writing a kaggle.json file to disk.
+    os.environ["KAGGLE_USERNAME"] = userdata.get("KAGGLE_USERNAME")
+    os.environ["KAGGLE_KEY"] = userdata.get("KAGGLE_KEY")
+    !kaggle competitions download -c aptos2019-blindness-detection -p {CONTENT_ROOT}/aptos2019 --force
+    _zip_path = f"{CONTENT_ROOT}/aptos2019/aptos2019-blindness-detection.zip"
+
+if os.path.exists(_zip_path):
+    print(f"Using zip: {_zip_path}")
+    !unzip -q -o {_zip_path} -d {CONTENT_ROOT}/aptos2019
+
+# Verify this actually worked instead of assuming it did: a failed Kaggle API call (401,
+# stale key) doesn't raise a Python exception, it just prints an error and lets the
+# notebook keep going -- so the very next cell would otherwise fail with a confusing
+# "FileNotFoundError: train.csv" instead of pointing at the actual cause.
+_train_csv = f"{CONTENT_ROOT}/aptos2019/train.csv"
+_train_images_dir = f"{CONTENT_ROOT}/aptos2019/train_images"
+_n_images = len(os.listdir(_train_images_dir)) if os.path.isdir(_train_images_dir) else 0
+if not os.path.exists(_train_csv) or _n_images < 1000:  # real dataset has 3,662 training images
+    raise RuntimeError(
+        "Still don't have the real dataset. If you saw a 401 error above from the Kaggle "
+        "API: visit https://www.kaggle.com/competitions/aptos2019-blindness-detection/rules "
+        "and click 'I Understand and Accept', then re-run this cell -- or skip the API "
+        "entirely and use Option B (manual upload) described above."
+    )
+print(f"Data OK: train.csv present, {_n_images} training images found.")
 """)
 
 code("""\
