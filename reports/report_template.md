@@ -59,7 +59,7 @@ notebook; some grades have fewer than 25 images available in APTOS 2019 (grade 3
 
 | Model | Access | Task formulation |
 |---|---|---|
-| Gemini (`gemini-2.5-flash`, per `GEMINI_MODEL` in the notebook - update here if you change it before running) | Hosted API | Prompted generative digit output against the written ICDR rubric |
+| Gemini (`gemini-3.5-flash`, per `GEMINI_MODEL` in the notebook - update here if you change it before running) | Hosted API | Prompted generative digit output against the written ICDR rubric |
 | MedGemma (`google/medgemma-4b-it`) | Local inference, bf16, single GPU | Prompted generative digit output, identical rubric prompt |
 | RetiZero | Local inference | Zero-shot CLIP-style image-text similarity against the 5 ICDR grade-name labels |
 

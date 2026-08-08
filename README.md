@@ -68,9 +68,10 @@ CLI · `pandas`, `scikit-learn`, `seaborn`
 
 ## Status
 
-Structurally complete and pipeline-tested: an actual Colab run surfaced two real issues,
-both now fixed with guardrails so they can't happen silently again — see below. Sample
-size, dependency, and ground-truth caveats still apply once you have a real run's numbers.
+Structurally complete and pipeline-tested, with defensive checks at each failure-prone
+step (data download, model loading, API rate limits — see below) so a broken step fails
+loudly instead of silently producing results that look valid but aren't. Sample size,
+dependency, and ground-truth caveats still apply once you have a real run's numbers.
 
 - **Sample size is `N_PER_GRADE = 25`** (125 images) by default — a statistically
   defensible size. Drop to `2` only for a quick pipeline smoke test, and don't report
@@ -83,15 +84,14 @@ size, dependency, and ground-truth caveats still apply once you have a real run'
   numbers above) — and Gemini is a generalist doing a specialist's task. Say both things
   in the write-up rather than presenting three peers on equal footing.
 
-**Guardrails added after a real run caught these:**
-- The notebook now checks that sampled images have real pixel variation before running
-  any model on them, and stops with a clear error if they look blank/placeholder —
-  catches a broken data-download step immediately instead of producing results that
-  look valid but aren't.
-- The run loop now checks all three models actually loaded before starting, instead of
-  discovering a missing model only after every one of its predictions has failed.
-- Gemini calls now retry with backoff on the free tier's rate limit (5 requests/minute)
-  instead of leaving that image's prediction permanently blank.
+**Built-in safety checks:**
+- Sampled images are checked for real pixel variation before any model runs on them —
+  stops immediately with a clear error if they look blank or placeholder, which is
+  always a sign the data download didn't actually complete.
+- The run loop verifies all three models are loaded before starting, so a model that
+  failed to load fails once with a clear message, not silently on every single image.
+- Gemini calls retry with backoff on the free tier's rate limit (5 requests/minute)
+  instead of leaving a prediction permanently blank.
 
 ## ICDR severity scale
 
