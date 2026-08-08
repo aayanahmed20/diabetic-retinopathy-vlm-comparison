@@ -68,10 +68,9 @@ CLI · `pandas`, `scikit-learn`, `seaborn`
 
 ## Status
 
-Structurally complete: every cell has been checked line-by-line against the real upstream
-RetiZero source (not guessed), and the pipeline checkpoints after every image so a crash
-never loses more than one prediction. It hasn't been executed end-to-end on a GPU yet, so
-budget time for first-run surprises. Three things to keep in mind before writing up results:
+Structurally complete and pipeline-tested: an actual Colab run surfaced two real issues,
+both now fixed with guardrails so they can't happen silently again — see below. Sample
+size, dependency, and ground-truth caveats still apply once you have a real run's numbers.
 
 - **Sample size is `N_PER_GRADE = 25`** (125 images) by default — a statistically
   defensible size. Drop to `2` only for a quick pipeline smoke test, and don't report
@@ -83,6 +82,16 @@ budget time for first-run surprises. Three things to keep in mind before writing
 - **Ground truth is one grader's opinion**, not an infallible reference (see the kappa
   numbers above) — and Gemini is a generalist doing a specialist's task. Say both things
   in the write-up rather than presenting three peers on equal footing.
+
+**Guardrails added after a real run caught these:**
+- The notebook now checks that sampled images have real pixel variation before running
+  any model on them, and stops with a clear error if they look blank/placeholder —
+  catches a broken data-download step immediately instead of producing results that
+  look valid but aren't.
+- The run loop now checks all three models actually loaded before starting, instead of
+  discovering a missing model only after every one of its predictions has failed.
+- Gemini calls now retry with backoff on the free tier's rate limit (5 requests/minute)
+  instead of leaving that image's prediction permanently blank.
 
 ## ICDR severity scale
 

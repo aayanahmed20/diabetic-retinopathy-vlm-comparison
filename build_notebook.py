@@ -158,6 +158,25 @@ axes = axes.ravel() if isinstance(axes, np.ndarray) else [axes]  # flatten to 1D
 for ax in axes:
     ax.axis("off")  # hide axes for every slot, including any unused trailing ones
 
+# Sanity check: a real fundus photo has real pixel variation. A blank, solid-color, or
+# placeholder image (e.g. from a broken download step) has a pixel standard deviation
+# near zero. This catches that immediately, with the exact filename, instead of letting
+# it flow silently through every model and only showing up later as a suspicious result
+# (e.g. every model predicting the same class regardless of ground truth).
+flat_images = []
+for _, row in sample_df.iterrows():
+    img = Image.open(row["image_path"]).convert("RGB")
+    flat_images.append((row["id_code"], np.asarray(img)))
+low_variance = [(id_code, arr.std()) for id_code, arr in flat_images if arr.std() < 5.0]
+if low_variance:
+    raise RuntimeError(
+        f"{len(low_variance)}/{len(flat_images)} sampled images look blank or nearly "
+        f"solid-color (pixel std < 5.0), which real fundus photos never are: "
+        f"{low_variance[:5]}\\n"
+        "This means the images aren't real -- check that the Kaggle download in Section 3 "
+        "actually completed (re-run it and check its output for errors) before continuing."
+    )
+
 # Each image's title shows its ground-truth grade, so this grid doubles as a visual
 # ground-truth reference — compare it against model predictions later in the notebook.
 for ax, (_, row) in zip(axes, sample_df.iterrows()):
@@ -178,6 +197,7 @@ The grading prompt below encodes the actual ICDR rubric rather than asking Gemin
 free-associate a number, which noticeably improves grading consistency.
 """)
 code("""\
+import time
 from google import genai
 from google.genai import types
 
@@ -199,18 +219,33 @@ Grade strictly on this rubric:
 
 Respond with ONLY a single digit 0-4. No words, no punctuation, no explanation.'''
 
-def predict_gemini(image_path):
+def predict_gemini(image_path, max_retries=5):
     # Send the raw image bytes + prompt in one call; Gemini's vision models accept
     # image parts directly, no separate encoding step needed.
     with open(image_path, "rb") as f:
         image_bytes = f.read()
-    response = gemini_client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=[
-            types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
-            ICDR_PROMPT,
-        ],
-    )
+
+    # The free tier is limited to 5 requests/minute -- on a batch of images that limit
+    # gets hit routinely, not as a rare edge case. Retrying with backoff turns a 429 into
+    # a short pause instead of a permanently missing prediction for that image.
+    for attempt in range(max_retries):
+        try:
+            response = gemini_client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[
+                    types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+                    ICDR_PROMPT,
+                ],
+            )
+            break
+        except Exception as e:
+            is_rate_limit = "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e)
+            if not is_rate_limit or attempt == max_retries - 1:
+                raise
+            wait_s = 20 * (attempt + 1)  # 20s, 40s, 60s, 80s -- free-tier resets per minute
+            print(f"  Gemini rate limit hit, waiting {wait_s}s (attempt {attempt + 1}/{max_retries})...")
+            time.sleep(wait_s)
+
     # The prompt asks for a bare digit, but models occasionally add stray text anyway —
     # pulling the first digit out of the response is more robust than assuming int(text) works.
     text = response.text.strip()
@@ -386,6 +421,26 @@ code("""\
 import gc
 import time
 import pandas as pd
+
+# Pre-flight check: confirm all three models are actually loaded before starting the
+# loop. Without this, a model that failed to load a few cells back (or was skipped by
+# running cells out of order) doesn't fail loudly here -- it fails silently on every
+# single image inside the try/except below, and you only find out at the very end when
+# that model's column is entirely empty.
+_missing = [
+    name for name, obj in [
+        ("gemini_client", globals().get("gemini_client")),
+        ("medgemma_model", globals().get("medgemma_model")),
+        ("medgemma_processor", globals().get("medgemma_processor")),
+        ("retizero_model", globals().get("retizero_model")),
+    ] if obj is None
+]
+if _missing:
+    raise RuntimeError(
+        f"These models aren't loaded yet: {_missing}. Scroll up and re-run their "
+        "setup cells (Sections 5-7) before running this cell -- otherwise every "
+        "prediction from the missing model(s) will fail."
+    )
 
 os.makedirs(RESULTS_DIR, exist_ok=True)
 predictions_path = f"{RESULTS_DIR}/predictions.csv"
