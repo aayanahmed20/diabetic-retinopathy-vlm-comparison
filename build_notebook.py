@@ -372,9 +372,16 @@ three-way tie.
 
 **Dependency note:** RetiZero's own `requirements.txt` pins an old torch/transformers
 stack that would break MedGemma's modern one — we deliberately run it on the current
-Colab stack instead (its ViT code uses standard torch APIs and loads fine). If it errors
-on your runtime, run RetiZero's cells separately and merge the CSVs afterward —
-`results/predictions.csv` is checkpointed per-image, so this works cleanly.
+Colab stack instead (its ViT code uses standard torch APIs and loads fine).
+
+**GPU memory note:** MedGemma alone uses several GB on a T4, and RetiZero needs its own
+chunk too — loading both onto the GPU at the same time risks a CUDA out-of-memory error.
+This cell only downloads RetiZero's weights; it doesn't load the model onto the GPU yet.
+Section 8 runs Gemini and MedGemma first, frees MedGemma's GPU memory, *then* loads
+RetiZero — so the two large models never compete for memory at the same time. (An earlier
+version of this notebook tried moving RetiZero to the CPU instead to solve this, but that
+introduced a device-mismatch bug — CPU model, GPU-loaded image tensors. Sequencing them
+instead of splitting devices avoids that class of bug entirely.)
 """)
 code("""\
 import os, sys
@@ -418,18 +425,24 @@ sys.path.insert(0, "/content/RetiZero")
 import torch
 from zeroshot import CLIPRModel     # RetiZero's own package (zeroshot/__init__.py re-exports this)
 
-# from_checkpoint=False here because we load the weights ourselves right below via
-# load_state_dict, rather than having the constructor fetch them.
-retizero_model = CLIPRModel(
-    vision_type="lora",
-    from_checkpoint=False,          # weights are applied below via load_state_dict
-    weights_path=RETIZERO_WEIGHTS_PATH,
-    R=8,                            # LoRA rank used at pretraining time
-)
-state_dict = torch.load(RETIZERO_WEIGHTS_PATH, map_location="cpu")
-retizero_model.load_state_dict(state_dict, strict=True)
-retizero_model.eval()               # disables dropout/batchnorm training behavior for inference
-print("RetiZero loaded successfully")
+# Defined but not called yet -- Section 8 calls this only after MedGemma's GPU memory has
+# been freed, so RetiZero always loads onto the GPU cleanly with no memory conflict and no
+# CPU/GPU device split to introduce tensor-mismatch bugs.
+def load_retizero():
+    # from_checkpoint=False here because we load the weights ourselves right below via
+    # load_state_dict, rather than having the constructor fetch them.
+    model = CLIPRModel(
+        vision_type="lora",
+        from_checkpoint=False,          # weights are applied below via load_state_dict
+        weights_path=RETIZERO_WEIGHTS_PATH,
+        R=8,                            # LoRA rank used at pretraining time
+    )
+    state_dict = torch.load(RETIZERO_WEIGHTS_PATH, map_location="cuda" if torch.cuda.is_available() else "cpu")
+    model.load_state_dict(state_dict, strict=True)
+    if torch.cuda.is_available():
+        model.cuda()                    # keep model and image tensors on the same device throughout
+    model.eval()                        # disables dropout/batchnorm training behavior for inference
+    return model
 """)
 
 code("""\
@@ -448,6 +461,7 @@ def predict_retizero(image_path):
     image = Image.open(image_path).convert("RGB")
     # forward() embeds the image and the 5 label strings, then returns their similarity
     # as (probability, logits) numpy arrays — argmax over probability gives the predicted grade.
+    # retizero_model is set by Section 8, right after loading it post-MedGemma-cleanup.
     with torch.no_grad():
         probability, _logits = retizero_model(image, RETIZERO_LABELS)
     return int(probability.argmax())
@@ -461,34 +475,39 @@ Each prediction is wrapped so one model's failure doesn't kill the run — faile
 are recorded as `None` and dropped per-model at scoring time. Gemini API calls are spaced
 1s apart to stay polite to rate limits.
 
-**This cell checkpoints after every image** to `results/predictions.csv` and skips
-`id_code`s already in that file. If the runtime crashes or restarts partway through
-(memory pressure from running three models on one GPU is the most likely cause), just
-re-run this cell — it picks up where it left off instead of starting over. It also runs
-a GPU memory cleanup every few images to reduce the chance of that happening.
+**Two phases, not one loop.** Phase 1 runs Gemini and MedGemma over every image. Then
+MedGemma's GPU memory is explicitly freed, and *only then* is RetiZero loaded and run in
+Phase 2 — so MedGemma and RetiZero are never both resident on the GPU at once, which is
+what a single combined loop risked (a CUDA out-of-memory error, since MedGemma alone uses
+several GB on a T4). This also means RetiZero stays on the GPU the whole time, the same
+device as its input images, avoiding the device-mismatch bugs that come from splitting a
+model across CPU and GPU.
+
+**Both phases checkpoint after every image** to `results/predictions.csv` and skip
+`id_code`s already scored. If the runtime crashes or restarts partway through, just re-run
+from wherever it stopped — nothing is lost.
 """)
 code("""\
 import gc
 import time
 import pandas as pd
 
-# Pre-flight check: confirm all three models are actually loaded before starting the
-# loop. Without this, a model that failed to load a few cells back (or was skipped by
-# running cells out of order) doesn't fail loudly here -- it fails silently on every
-# single image inside the try/except below, and you only find out at the very end when
-# that model's column is entirely empty.
+# Pre-flight check: confirm everything Phase 1 needs is actually loaded before starting.
+# Without this, a model that failed to load a few cells back (or was skipped by running
+# cells out of order) doesn't fail loudly here -- it fails silently on every single image
+# inside the try/except below, and you only find out at the very end when that model's
+# column is entirely empty.
 _missing = [
     name for name, obj in [
         ("gemini_client", globals().get("gemini_client")),
         ("medgemma_model", globals().get("medgemma_model")),
         ("medgemma_processor", globals().get("medgemma_processor")),
-        ("retizero_model", globals().get("retizero_model")),
     ] if obj is None
 ]
 if _missing:
     raise RuntimeError(
         f"These models aren't loaded yet: {_missing}. Scroll up and re-run their "
-        "setup cells (Sections 5-7) before running this cell -- otherwise every "
+        "setup cells (Sections 5-6) before running this cell -- otherwise every "
         "prediction from the missing model(s) will fail."
     )
 
@@ -506,6 +525,7 @@ else:
     done_ids = set()
 
 results = results_df.to_dict("records")
+print(f"=== Phase 1: Gemini + MedGemma over {len(sample_df)} images ===")
 for i, (_, row) in enumerate(sample_df.iterrows()):
     if row["id_code"] in done_ids:
         continue
@@ -520,11 +540,10 @@ for i, (_, row) in enumerate(sample_df.iterrows()):
     for model_name, predict_fn in [
         ("gemini", predict_gemini),
         ("medgemma", predict_medgemma),
-        ("retizero", predict_retizero),
     ]:
         # Each model call is isolated in its own try/except: one model erroring on one
-        # image (rate limit, OOM, bad response) doesn't stop the other two models or
-        # abort the whole run — it's just recorded as a missing prediction.
+        # image (rate limit, bad response) doesn't stop the other or abort the run — it's
+        # just recorded as a missing prediction.
         try:
             record[f"{model_name}_pred"] = predict_fn(row["image_path"])
         except Exception as e:
@@ -536,7 +555,6 @@ for i, (_, row) in enumerate(sample_df.iterrows()):
     pd.DataFrame(results).to_csv(predictions_path, index=False)
     print(f"done {row['id_code']} (GT grade {row['diagnosis']})")
 
-    # Periodic GPU memory cleanup - reduces fragmentation buildup over a long run.
     if i % 10 == 0:
         gc.collect()
         if torch.cuda.is_available():
@@ -544,7 +562,40 @@ for i, (_, row) in enumerate(sample_df.iterrows()):
 
     time.sleep(1)  # be polite to the Gemini API's rate limit
 
-results_df = pd.DataFrame(results)
+# --- Free MedGemma's GPU memory before loading RetiZero ---
+print("\\n=== Freeing MedGemma from GPU memory before loading RetiZero ===")
+del medgemma_model, medgemma_processor
+gc.collect()
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+    print(f"GPU memory now free: {torch.cuda.mem_get_info()[0] / 1e9:.1f} GB")
+
+# --- Phase 2: load and run RetiZero now that the GPU has room for it ---
+print("\\n=== Phase 2: loading RetiZero ===")
+retizero_model = load_retizero()
+print("RetiZero loaded successfully")
+
+print(f"=== Phase 2: RetiZero over {len(sample_df)} images ===")
+results_df = pd.DataFrame(results)  # refresh with Phase 1's results before appending retizero_pred
+retizero_done_ids = set(results_df.loc[results_df["retizero_pred"].notna(), "id_code"]) if "retizero_pred" in results_df.columns else set()
+for i, (_, row) in enumerate(sample_df.iterrows()):
+    if row["id_code"] in retizero_done_ids:
+        continue
+    idx = results_df.index[results_df["id_code"] == row["id_code"]][0]
+    try:
+        results_df.loc[idx, "retizero_pred"] = predict_retizero(row["image_path"])
+    except Exception as e:
+        results_df.loc[idx, "retizero_pred"] = None
+        results_df.loc[idx, "retizero_error"] = str(e)
+
+    results_df.to_csv(predictions_path, index=False)
+    print(f"done {row['id_code']} (GT grade {row['diagnosis']})")
+
+    if i % 10 == 0:
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
 results_df
 """)
 
