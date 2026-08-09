@@ -88,21 +88,23 @@ CLI · `pandas`, `scikit-learn`, `seaborn`
 
 ## Status
 
-Structurally complete and pipeline-tested, with defensive checks at each failure-prone
-step (data download, model loading, API rate limits — see below) so a broken step fails
-loudly instead of silently producing results that look valid but aren't. Sample size,
-dependency, and ground-truth caveats still apply once you have a real run's numbers.
+The pipeline has real, verified results now — see the Results section above and the full
+write-up in `reports/report.md`. Only MedGemma actually produced answers in that run;
+Gemini and RetiZero both hit fixable setup errors (explained in the report). A few things
+worth knowing before running it again:
 
-- **Sample size is `N_PER_GRADE = 25`** (125 images) by default — a statistically
-  defensible size. Drop to `2` only for a quick pipeline smoke test, and don't report
-  those numbers; the bootstrap CIs will make why obvious.
-- **RetiZero's dependencies clash with MedGemma's** (old torch/transformers pins vs.
-  modern ones). This notebook runs both on the current stack; if RetiZero errors on your
-  runtime, run its cells separately and merge the CSVs — predictions are saved
-  incrementally, so this works cleanly.
-- **Ground truth is one grader's opinion**, not an infallible reference (see the kappa
-  numbers above) — and Gemini is a generalist doing a specialist's task. Say both things
-  in the write-up rather than presenting three peers on equal footing.
+- **By default the notebook samples 25 photos from each of the 5 grades** (125 total), so
+  rare/severe grades aren't drowned out by the common mild ones. The real run in this repo
+  didn't end up using that default — it used 18 photos gathered one at a time, unevenly
+  spread across grades. That's explained fully in the report.
+- **RetiZero and MedGemma want slightly different software versions.** This notebook runs
+  both on the same setup anyway; if RetiZero errors on your machine, its cells can be run
+  separately and the results merged afterward — nothing is lost, since results save after
+  each photo.
+- **The "correct" grade is one doctor's opinion**, not a perfect answer key — real doctors
+  only agree with each other 40-65% of the time on borderline cases. And Gemini isn't a
+  medical AI the way MedGemma and RetiZero are. Both are worth saying plainly in a
+  write-up, rather than treating all three as equally-matched.
 
 **Built-in safety checks:**
 - Sampled images are checked for real pixel variation before any model runs on them —
