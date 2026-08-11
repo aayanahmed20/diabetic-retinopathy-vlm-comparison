@@ -63,8 +63,9 @@ GRADE_NAMES = {
 md("## 1. Install dependencies")
 code("""\
 # kaggle: dataset download | google-genai: Gemini API | transformers/accelerate/torch/torchvision: MedGemma + RetiZero
-# pillow/pandas/scikit-learn/matplotlib/seaborn: image I/O, data handling, metrics, plots | gdown: RetiZero weight download | kornia: RetiZero image transforms
-!pip install -q kaggle google-genai transformers accelerate torch torchvision pillow pandas scikit-learn matplotlib seaborn gdown kornia
+# pillow/pandas/scikit-learn/matplotlib/seaborn: image I/O, data handling, metrics, plots | gdown: RetiZero weight download
+# tabulate: required by pandas.DataFrame.to_markdown() in Section 10, not pulled in by anything else here
+!pip install -q kaggle google-genai transformers accelerate torch torchvision pillow pandas scikit-learn matplotlib seaborn gdown tabulate
 """)
 
 # ---------------------------------------------------------------------------
@@ -76,7 +77,11 @@ This cell fails loudly and names any missing secret, rather than failing midway 
 code("""\
 from google.colab import userdata
 
-REQUIRED_SECRETS = ["GEMINI_API_KEY", "HF_TOKEN", "KAGGLE_USERNAME", "KAGGLE_KEY"]
+# Kaggle accepts EITHER the classic KAGGLE_USERNAME+KAGGLE_KEY pair OR the newer
+# single KAGGLE_API_TOKEN (KGAT_... format) -- only one of the two is required, not
+# both, so it's checked separately below instead of being lumped into REQUIRED_SECRETS
+# (which would incorrectly demand all four Kaggle-related secrets at once).
+REQUIRED_SECRETS = ["GEMINI_API_KEY", "HF_TOKEN"]
 
 # userdata.get() raises if a secret isn't set — catch that per-name so one missing
 # secret is reported clearly instead of stopping at the first one.
@@ -86,6 +91,25 @@ for name in REQUIRED_SECRETS:
         print(f"[OK]   {name} is set")
     except Exception:
         print(f"[MISS] {name} -> add it under the Secrets tab, then re-run this cell")
+
+def _secret_set(name):
+    try:
+        return bool(userdata.get(name))
+    except Exception:
+        return False
+
+_has_kaggle_token = _secret_set("KAGGLE_API_TOKEN")
+_has_kaggle_classic = _secret_set("KAGGLE_USERNAME") and _secret_set("KAGGLE_KEY")
+if _has_kaggle_token:
+    print("[OK]   KAGGLE_API_TOKEN is set")
+elif _has_kaggle_classic:
+    print("[OK]   KAGGLE_USERNAME + KAGGLE_KEY are set")
+else:
+    print(
+        "[MISS] Kaggle credentials -> add EITHER KAGGLE_API_TOKEN (new KGAT_... token) "
+        "OR both KAGGLE_USERNAME and KAGGLE_KEY (classic) under the Secrets tab. "
+        "Not required if you're using Option B (manual zip upload) in Section 3."
+    )
 """)
 
 # ---------------------------------------------------------------------------
@@ -131,9 +155,32 @@ _zip_path = next((p for p in CANDIDATE_ZIPS if os.path.exists(p)), None)
 
 if _zip_path is None:
     # No manually-provided zip found -- try the Kaggle API. Reads credentials from Colab
-    # secrets rather than writing a kaggle.json file to disk.
-    os.environ["KAGGLE_USERNAME"] = userdata.get("KAGGLE_USERNAME")
-    os.environ["KAGGLE_KEY"] = userdata.get("KAGGLE_KEY")
+    # secrets rather than writing a kaggle.json file to disk. Kaggle accepts either the
+    # new single-token format (KAGGLE_API_TOKEN, looks like "KGAT_...") or the classic
+    # KAGGLE_USERNAME + KAGGLE_KEY pair -- try the new token first since that's what the
+    # current Kaggle "Create New Token" flow issues by default.
+    def _get_secret_or_none(name):
+        try:
+            val = userdata.get(name)
+            return val if val else None
+        except Exception:
+            return None
+
+    _kaggle_token = _get_secret_or_none("KAGGLE_API_TOKEN")
+    _kaggle_user = _get_secret_or_none("KAGGLE_USERNAME")
+    _kaggle_key = _get_secret_or_none("KAGGLE_KEY")
+
+    if _kaggle_token:
+        os.environ["KAGGLE_API_TOKEN"] = _kaggle_token
+    elif _kaggle_user and _kaggle_key:
+        os.environ["KAGGLE_USERNAME"] = _kaggle_user
+        os.environ["KAGGLE_KEY"] = _kaggle_key
+    else:
+        raise RuntimeError(
+            "No Kaggle credentials found and no manual zip either. Add KAGGLE_API_TOKEN "
+            "(or KAGGLE_USERNAME + KAGGLE_KEY) as a Colab secret, or use Option B "
+            "(manual upload) described above."
+        )
     !kaggle competitions download -c aptos2019-blindness-detection -p {CONTENT_ROOT}/aptos2019 --force
     _zip_path = f"{CONTENT_ROOT}/aptos2019/aptos2019-blindness-detection.zip"
 
@@ -253,6 +300,37 @@ from google.genai import types
 
 gemini_client = genai.Client(api_key=userdata.get("GEMINI_API_KEY"))
 
+# Free-tier Gemini is capped at 5 requests/minute. Calling it in a plain serial loop
+# with a flat time.sleep(1) between calls doesn't respect that limit either -- it just
+# guarantees a 429 every 5th image, each one eating a 20-80s backoff (see the retry loop
+# below). A sliding-window limiter lets Section 8 fire several requests concurrently
+# (via a thread pool) while still never exceeding 5 calls in any 60s window, which is
+# what actually gets close to the free tier's real throughput instead of serializing
+# everything through avoidable rate-limit waits.
+import threading
+
+class RateLimiter:
+    def __init__(self, max_calls, window_s):
+        self.max_calls = max_calls
+        self.window_s = window_s
+        self.calls = []
+        self.lock = threading.Lock()
+
+    def acquire(self):
+        while True:
+            with self.lock:
+                now = time.time()
+                self.calls = [t for t in self.calls if now - t < self.window_s]
+                if len(self.calls) < self.max_calls:
+                    self.calls.append(now)
+                    return
+                sleep_for = self.window_s - (now - self.calls[0]) + 0.05
+            time.sleep(sleep_for)
+
+# max_calls=5 matches the free tier. If you're on a paid tier with a higher quota,
+# raise this to match and Section 8's thread pool will speed up proportionally.
+gemini_rate_limiter = RateLimiter(max_calls=5, window_s=60)
+
 # The rubric text below is the actual ICDR grading criteria, not a paraphrase — giving
 # Gemini the same definitions a human grader uses is what makes its answer comparable
 # to the dataset's ground truth (and to MedGemma/RetiZero, which grade against the same scale).
@@ -269,16 +347,42 @@ Grade strictly on this rubric:
 
 Respond with ONLY a single digit 0-4. No words, no punctuation, no explanation.'''
 
+# Gemini 3.x models "think" before answering by default (thinking_level defaults to
+# "medium"), and thinking tokens count against the same output-token budget as the
+# visible answer -- for a one-digit answer that's pure overhead, and it's also what
+# was silently starving every prediction of real output (finish_reason=MAX_TOKENS,
+# response.text raising instead of returning "0".."4"). thinking_level="low" keeps a
+# fast sanity check without burning the whole budget on deliberation.
+GEMINI_CONFIG = types.GenerateContentConfig(
+    thinking_config=types.ThinkingConfig(thinking_level="low"),
+    max_output_tokens=512,
+    # Fundus photographs depict a disease and are full of dark red/vascular detail --
+    # Gemini's default safety thresholds routinely misfire on medical imagery like this
+    # and silently return zero candidates instead of an answer. Grading known clinical
+    # photographs from a public research dataset is exactly the case these thresholds
+    # are too aggressive for, so they're relaxed here rather than left at the default.
+    safety_settings=[
+        types.SafetySetting(category=cat, threshold="BLOCK_ONLY_HIGH")
+        for cat in [
+            "HARM_CATEGORY_HARASSMENT",
+            "HARM_CATEGORY_HATE_SPEECH",
+            "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            "HARM_CATEGORY_DANGEROUS_CONTENT",
+        ]
+    ],
+)
+
 def predict_gemini(image_path, max_retries=5):
     # Send the raw image bytes + prompt in one call; Gemini's vision models accept
     # image parts directly, no separate encoding step needed.
     with open(image_path, "rb") as f:
         image_bytes = f.read()
 
-    # The free tier is limited to 5 requests/minute -- on a batch of images that limit
-    # gets hit routinely, not as a rare edge case. Retrying with backoff turns a 429 into
-    # a short pause instead of a permanently missing prediction for that image.
+    # Retrying with backoff is still here as a safety net for bursts that slip past the
+    # limiter (clock skew, another process sharing the same API key) -- but with the
+    # limiter in place this should rarely trigger.
     for attempt in range(max_retries):
+        gemini_rate_limiter.acquire()
         try:
             response = gemini_client.models.generate_content(
                 model=GEMINI_MODEL,
@@ -286,6 +390,7 @@ def predict_gemini(image_path, max_retries=5):
                     types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
                     ICDR_PROMPT,
                 ],
+                config=GEMINI_CONFIG,
             )
             break
         except Exception as e:
@@ -295,6 +400,19 @@ def predict_gemini(image_path, max_retries=5):
             wait_s = 20 * (attempt + 1)  # 20s, 40s, 60s, 80s -- free-tier resets per minute
             print(f"  Gemini rate limit hit, waiting {wait_s}s (attempt {attempt + 1}/{max_retries})...")
             time.sleep(wait_s)
+
+    # response.text raises ValueError (not just returns empty) whenever a candidate has
+    # no text part -- safety block, empty MAX_TOKENS cutoff, etc. Checking finish_reason
+    # first turns that opaque crash into a specific, debuggable message instead of
+    # letting the generic try/except in Section 8 swallow it as an unlabeled None.
+    candidates = response.candidates or []
+    if not candidates:
+        raise RuntimeError("Gemini returned no candidates (prompt likely blocked)")
+    finish_reason = str(candidates[0].finish_reason)
+    if "SAFETY" in finish_reason or "PROHIBITED" in finish_reason:
+        raise RuntimeError(f"Gemini blocked this image (finish_reason={finish_reason})")
+    if not candidates[0].content or not candidates[0].content.parts:
+        raise RuntimeError(f"Gemini returned no text (finish_reason={finish_reason})")
 
     # The prompt asks for a bare digit, but models occasionally add stray text anyway —
     # pulling the first digit out of the response is more robust than assuming int(text) works.
@@ -483,14 +601,22 @@ several GB on a T4). This also means RetiZero stays on the GPU the whole time, t
 device as its input images, avoiding the device-mismatch bugs that come from splitting a
 model across CPU and GPU.
 
-**Both phases checkpoint after every image** to `results/predictions.csv` and skip
-`id_code`s already scored. If the runtime crashes or restarts partway through, just re-run
-from wherever it stopped — nothing is lost.
+**Both phases checkpoint continuously** to `results/predictions.csv` and skip `id_code`s
+already scored by every model in that phase. If the runtime crashes or restarts partway
+through, just re-run from wherever it stopped — nothing already-scored is lost or redone.
+
+**Phase 1 itself is two passes, for a reason.** Gemini calls are network-bound (waiting
+on a response, not on your GPU) but MedGemma calls are GPU-bound — running them in the
+same serial loop means every image pays for both delays back to back. Splitting them
+lets Gemini's calls run several at once (bounded by the rate limiter defined in Section
+5) while MedGemma runs after, at whatever speed the GPU allows, without also waiting on
+network round-trips it doesn't need.
 """)
 code("""\
 import gc
 import time
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Pre-flight check: confirm everything Phase 1 needs is actually loaded before starting.
 # Without this, a model that failed to load a few cells back (or was skipped by running
@@ -514,53 +640,81 @@ if _missing:
 os.makedirs(RESULTS_DIR, exist_ok=True)
 predictions_path = f"{RESULTS_DIR}/predictions.csv"
 
-# Resume support: if predictions.csv already exists (e.g. from a prior partial run),
-# load it and skip any id_code already scored instead of starting from zero.
+# Every row keyed by id_code, not a plain list -- this is what makes "resume" mean
+# "fill in only what's missing" instead of "append a second row for anything not
+# already 100% done", which would silently duplicate partially-scored images.
 if os.path.exists(predictions_path):
-    results_df = pd.read_csv(predictions_path)
-    done_ids = set(results_df["id_code"])
-    print(f"Resuming: {len(done_ids)} images already scored, skipping those.")
+    _prior = pd.read_csv(predictions_path)
+    results_by_id = {r["id_code"]: r for r in _prior.to_dict("records")}
+    print(f"Resuming: {len(results_by_id)} images have at least a partial record.")
 else:
-    results_df = pd.DataFrame()
-    done_ids = set()
+    results_by_id = {}
 
-results = results_df.to_dict("records")
-print(f"=== Phase 1: Gemini + MedGemma over {len(sample_df)} images ===")
-for i, (_, row) in enumerate(sample_df.iterrows()):
-    if row["id_code"] in done_ids:
-        continue
+def _get_or_init(id_code, image_path, diagnosis):
+    if id_code not in results_by_id:
+        results_by_id[id_code] = {
+            "id_code": id_code,
+            "image_path": image_path,
+            "ground_truth": int(diagnosis),
+        }
+    return results_by_id[id_code]
 
-    # ground_truth here is the dataset's own label for this image — this is what every
-    # model's prediction gets compared against in the next section.
-    record = {
-        "id_code": row["id_code"],
-        "image_path": row["image_path"],
-        "ground_truth": int(row["diagnosis"]),
-    }
-    for model_name, predict_fn in [
-        ("gemini", predict_gemini),
-        ("medgemma", predict_medgemma),
-    ]:
-        # Each model call is isolated in its own try/except: one model erroring on one
-        # image (rate limit, bad response) doesn't stop the other or abort the run — it's
-        # just recorded as a missing prediction.
-        try:
-            record[f"{model_name}_pred"] = predict_fn(row["image_path"])
-        except Exception as e:
-            record[f"{model_name}_pred"] = None
-            record[f"{model_name}_error"] = str(e)
-    results.append(record)
+def _checkpoint():
+    pd.DataFrame(list(results_by_id.values())).to_csv(predictions_path, index=False)
 
-    # Checkpoint after every image - a crash loses at most one image's work, not the run.
-    pd.DataFrame(results).to_csv(predictions_path, index=False)
-    print(f"done {row['id_code']} (GT grade {row['diagnosis']})")
+# --- Phase 1a: Gemini, concurrently (network-bound -- a thread pool waits on many
+# in-flight HTTP requests at once instead of one at a time; gemini_rate_limiter from
+# Section 5 keeps the actual request rate under the API's per-minute cap regardless of
+# how many workers are running). ---
+todo = [
+    row for _, row in sample_df.iterrows()
+    if pd.isna(results_by_id.get(row["id_code"], {}).get("gemini_pred"))
+]
+print(f"=== Phase 1a: Gemini over {len(todo)} images ({len(sample_df) - len(todo)} already scored) ===")
+
+def _score_gemini(row):
+    try:
+        return row["id_code"], predict_gemini(row["image_path"]), None
+    except Exception as e:
+        return row["id_code"], None, str(e)
+
+with ThreadPoolExecutor(max_workers=5) as pool:
+    futures = [pool.submit(_score_gemini, row) for _, row in pd.DataFrame(todo).iterrows()] if todo else []
+    for n, fut in enumerate(as_completed(futures), start=1):
+        id_code, pred, err = fut.result()
+        row = sample_df.loc[sample_df["id_code"] == id_code].iloc[0]
+        record = _get_or_init(id_code, row["image_path"], row["diagnosis"])
+        record["gemini_pred"] = pred
+        if err:
+            record["gemini_error"] = err
+        if n % 5 == 0 or n == len(futures):
+            _checkpoint()
+        print(f"gemini done {id_code} ({n}/{len(futures)})" + (f" -- {err}" if err else ""))
+_checkpoint()
+
+# --- Phase 1b: MedGemma, sequentially (GPU-bound -- concurrency wouldn't help here
+# since a single GPU runs one forward pass at a time anyway; it would just add
+# scheduling overhead). ---
+todo = [
+    row for _, row in sample_df.iterrows()
+    if pd.isna(results_by_id.get(row["id_code"], {}).get("medgemma_pred"))
+]
+print(f"=== Phase 1b: MedGemma over {len(todo)} images ({len(sample_df) - len(todo)} already scored) ===")
+for i, row in enumerate(todo):
+    record = _get_or_init(row["id_code"], row["image_path"], row["diagnosis"])
+    try:
+        record["medgemma_pred"] = predict_medgemma(row["image_path"])
+    except Exception as e:
+        record["medgemma_pred"] = None
+        record["medgemma_error"] = str(e)
+
+    _checkpoint()
+    print(f"medgemma done {row['id_code']} ({i + 1}/{len(todo)})")
 
     if i % 10 == 0:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-
-    time.sleep(1)  # be polite to the Gemini API's rate limit
 
 # --- Free MedGemma's GPU memory before loading RetiZero ---
 print("\\n=== Freeing MedGemma from GPU memory before loading RetiZero ===")
@@ -572,29 +726,49 @@ if torch.cuda.is_available():
 
 # --- Phase 2: load and run RetiZero now that the GPU has room for it ---
 print("\\n=== Phase 2: loading RetiZero ===")
-retizero_model = load_retizero()
-print("RetiZero loaded successfully")
+# This used to be an unguarded call: any failure here (a shape mismatch between the
+# downloaded checkpoint and the model, a CUDA OOM, a partial/corrupt weights file)
+# raised a raw traceback and skipped Phase 2 entirely -- with predictions.csv ending up
+# with a gemini_pred/medgemma_pred filled in but retizero_pred entirely missing, and no
+# indication of why. Catching it here gives an actionable message and still lets you
+# keep the Gemini/MedGemma results already saved to disk instead of losing the whole run.
+try:
+    retizero_model = load_retizero()
+    print("RetiZero loaded successfully")
+except Exception as e:
+    retizero_model = None
+    print(
+        f"RetiZero failed to load: {e}\\n"
+        "Gemini + MedGemma predictions above are already saved to "
+        f"{predictions_path} -- fix the error above (common causes: corrupt/partial "
+        "download in Section 7, GPU out of memory, or a checkpoint whose keys don't "
+        "match CLIPRModel) and re-run this cell; Phase 1 will skip already-scored images."
+    )
 
-print(f"=== Phase 2: RetiZero over {len(sample_df)} images ===")
-results_df = pd.DataFrame(results)  # refresh with Phase 1's results before appending retizero_pred
-retizero_done_ids = set(results_df.loc[results_df["retizero_pred"].notna(), "id_code"]) if "retizero_pred" in results_df.columns else set()
-for i, (_, row) in enumerate(sample_df.iterrows()):
-    if row["id_code"] in retizero_done_ids:
-        continue
-    idx = results_df.index[results_df["id_code"] == row["id_code"]][0]
-    try:
-        results_df.loc[idx, "retizero_pred"] = predict_retizero(row["image_path"])
-    except Exception as e:
-        results_df.loc[idx, "retizero_pred"] = None
-        results_df.loc[idx, "retizero_error"] = str(e)
+if retizero_model is None:
+    print("Skipping Phase 2 -- RetiZero didn't load (see error above). Re-run this cell after fixing it.")
+    results_df = pd.DataFrame(results)
+else:
+    print(f"=== Phase 2: RetiZero over {len(sample_df)} images ===")
+    results_df = pd.DataFrame(results)  # refresh with Phase 1's results before appending retizero_pred
+    retizero_done_ids = set(results_df.loc[results_df["retizero_pred"].notna(), "id_code"]) if "retizero_pred" in results_df.columns else set()
+    for i, (_, row) in enumerate(sample_df.iterrows()):
+        if row["id_code"] in retizero_done_ids:
+            continue
+        idx = results_df.index[results_df["id_code"] == row["id_code"]][0]
+        try:
+            results_df.loc[idx, "retizero_pred"] = predict_retizero(row["image_path"])
+        except Exception as e:
+            results_df.loc[idx, "retizero_pred"] = None
+            results_df.loc[idx, "retizero_error"] = str(e)
 
-    results_df.to_csv(predictions_path, index=False)
-    print(f"done {row['id_code']} (GT grade {row['diagnosis']})")
+        results_df.to_csv(predictions_path, index=False)
+        print(f"done {row['id_code']} (GT grade {row['diagnosis']})")
 
-    if i % 10 == 0:
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        if i % 10 == 0:
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 results_df
 """)
