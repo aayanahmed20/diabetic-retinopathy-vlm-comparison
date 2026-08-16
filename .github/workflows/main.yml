@@ -2,6 +2,9 @@ name: Run real experiments
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
   run-experiments:
@@ -27,7 +30,7 @@ jobs:
           pip install google-genai transformers accelerate torch torchvision gdown pandas scikit-learn seaborn tabulate || true
 
       - name: Download RetiZero weights (if URL provided)
-        if: env.RETIZERO_WEIGHTS_URL != ''
+        if: ${{ env.RETIZERO_WEIGHTS_URL != '' }}
         run: |
           echo "Downloading RetiZero weights from provided URL"
           python - <<'PY'
