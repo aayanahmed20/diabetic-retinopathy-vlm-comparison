@@ -1,0 +1,3 @@
+Gemini: N=125, Accuracy=0.200, QWK=0.000, MAE=1.600
+MedGemma: N=125, Accuracy=0.200, QWK=0.000, MAE=1.600
+RetiZero: N=125, Accuracy=0.200, QWK=0.000, MAE=1.600
