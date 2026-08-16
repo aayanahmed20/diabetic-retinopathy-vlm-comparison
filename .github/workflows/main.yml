@@ -1,0 +1,105 @@
+name: Run real experiments
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-experiments:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      RETIZERO_WEIGHTS_URL: ${{ secrets.RETIZERO_WEIGHTS_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt || true
+          pip install google-genai transformers accelerate torch torchvision gdown pandas scikit-learn seaborn tabulate || true
+
+      - name: Download RetiZero weights (if URL provided)
+        if: env.RETIZERO_WEIGHTS_URL != ''
+        run: |
+          echo "Downloading RetiZero weights from provided URL"
+          python - <<'PY'
+import os, subprocess, sys
+url = os.environ.get('RETIZERO_WEIGHTS_URL')
+if not url:
+    print('No RETIZERO_WEIGHTS_URL set')
+    sys.exit(0)
+# try gdown first
+try:
+    import gdown
+    out = 'retizero_weights.pth'
+    gdown.download(url, out, quiet=False)
+    print('Downloaded to', out)
+except Exception:
+    # fallback to curl
+    print('gdown failed or not available, trying curl')
+    subprocess.check_call(['curl','-L', url, '-o', 'retizero_weights.pth'])
+PY
+
+      - name: Create results dir
+        run: mkdir -p results
+
+      - name: Run Gemini adapter
+        run: python src/run_gemini.py --input tests/test_metadata_subset.csv --output results/predictions.csv || true
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+      - name: Run MedGemma adapter
+        run: python src/run_medgemma.py --input tests/test_metadata_subset.csv --output results/predictions.csv || true
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+      - name: Run RetiZero adapter
+        run: python src/run_retizero.py --input tests/test_metadata_subset.csv --output results/predictions.csv --weights retizero_weights.pth || true
+
+      - name: Compute metrics
+        run: |
+          python - <<'PY'
+import pandas as pd
+from sklearn.metrics import accuracy_score, cohen_kappa_score, mean_absolute_error
+df = pd.read_csv('results/predictions.csv')
+models = [c for c in df.columns if c.endswith('_pred')]
+lines = []
+for m in models:
+    valid = df.dropna(subset=[m,'diagnosis'])
+    if len(valid)==0:
+        lines.append(f"{m}: N=0")
+        continue
+    y_true = valid['diagnosis'].astype(int)
+    y_pred = valid[m].astype(int)
+    acc = accuracy_score(y_true, y_pred)
+    qwk = cohen_kappa_score(y_true, y_pred, weights='quadratic')
+    mae = mean_absolute_error(y_true, y_pred)
+    lines.append(f"{m}: N={len(valid)}, Accuracy={acc:.3f}, QWK={qwk:.3f}, MAE={mae:.3f}")
+print('\\n'.join(lines))
+with open('results/metrics.txt','w') as f:
+    f.write('\\n'.join(lines))
+PY
+
+      - name: Commit results
+        uses: EndBug/add-and-commit@v9
+        with:
+          author_name: github-actions[bot]
+          author_email: github-actions[bot]@users.noreply.github.com
+          message: "Add real-run results (automated run)"
+          add: 'results/*'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload results artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dr-vlm-results
+          path: results/
