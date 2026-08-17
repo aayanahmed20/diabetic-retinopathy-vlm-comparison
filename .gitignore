@@ -16,8 +16,17 @@ checkpoints/
 *.pth
 *.ckpt
 
-# generated results (regenerate by running the notebook)
-results/
+# generated results (regenerate by running the notebook) -- EXCEPT the pilot-run
+# artifacts below, which are intentionally tracked: this repo ships a finished pilot
+# deliverable (synthetic data, seeded mock predictions), not just pipeline code. See
+# README.md's "What this repo gives you" section.
+results/*
+!results/predictions.csv
+!results/metrics.txt
+!results/metrics_summary.json
+!results/summary_table.csv
+!results/pilot_grade_distribution.png
+!results/pilot_confusion_matrices.png
 *.tar.gz
 
 # python
