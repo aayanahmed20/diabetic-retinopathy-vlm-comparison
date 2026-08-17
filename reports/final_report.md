@@ -98,6 +98,7 @@ This produces `results/predictions.csv`, `results/metrics.txt`,
 `results/metrics_summary.json`, `results/summary_table.csv`, and two figures
 (`pilot_grade_distribution.png`, `pilot_confusion_matrices.png`), all copied into
 `reports/figures/` for this report.
+
 ### B. Sample
 
 125 synthetic rows, exactly 25 per ICDR grade 0-4 (balanced by construction, not by
@@ -197,6 +198,7 @@ prove, and it does. The next step toward the real comparison this project is ult
 for is running `build_notebook.py` with `PILOT_MODE=0` on a Colab GPU runtime with real
 Kaggle/Gemini/Hugging Face credentials, which would replace every number in Section IV
 with real model output on real fundus images.
+
 ---
 
 ## Appendix: prior partial real run (18 images, MedGemma only, 2026-08-08)
