@@ -1,0 +1,35 @@
+{
+  "gemini": {
+    "n_scored": 125,
+    "n_total": 125,
+    "accuracy": 0.216,
+    "accuracy_95ci": [
+      0.144,
+      0.288
+    ],
+    "quadratic_weighted_kappa": -0.0602,
+    "mean_absolute_error_grades": 1.632
+  },
+  "medgemma": {
+    "n_scored": 125,
+    "n_total": 125,
+    "accuracy": 0.232,
+    "accuracy_95ci": [
+      0.16,
+      0.304
+    ],
+    "quadratic_weighted_kappa": 0.1785,
+    "mean_absolute_error_grades": 1.416
+  },
+  "retizero": {
+    "n_scored": 125,
+    "n_total": 125,
+    "accuracy": 0.232,
+    "accuracy_95ci": [
+      0.16,
+      0.312
+    ],
+    "quadratic_weighted_kappa": -0.0697,
+    "mean_absolute_error_grades": 1.528
+  }
+}
