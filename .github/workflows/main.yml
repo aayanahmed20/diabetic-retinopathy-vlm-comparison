@@ -1,19 +1,23 @@
-name: Run real experiments
+name: Validate pilot notebook
+
+# There are no GPU/Kaggle/Gemini/HF credentials available in CI, so this workflow does
+# NOT attempt the real-run pipeline. It regenerates and executes the pilot notebook
+# (PILOT_MODE=1, synthetic data + seeded mock predictions only) and fails the build if it
+# doesn't run cleanly end to end. It never commits anything back to the repo -- if you
+# want updated results/ artifacts, run `python build_notebook.py` and the notebook
+# execution locally and commit the output yourself.
 
 on:
   workflow_dispatch:
   push:
     branches:
       - main
+  pull_request:
 
 jobs:
-  run-experiments:
+  validate-pilot-notebook:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
-    env:
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      RETIZERO_WEIGHTS_URL: ${{ secrets.RETIZERO_WEIGHTS_URL }}
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,88 +25,56 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
-      - name: Install deps
+      - name: Install pilot-mode dependencies
+        # Pilot mode only needs pandas/numpy/scikit-learn/matplotlib/seaborn/tabulate +
+        # nbformat/nbclient to build and execute the notebook -- none of the real-mode
+        # deps (kaggle, google-genai, transformers, torch, gdown) are needed or installed
+        # here, since PILOT_MODE never imports them.
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt || true
-          pip install google-genai transformers accelerate torch torchvision gdown pandas scikit-learn seaborn tabulate || true
+          pip install nbformat nbclient nbconvert ipykernel pandas numpy scikit-learn matplotlib seaborn tabulate
 
-      - name: Download RetiZero weights (if URL provided)
-        if: ${{ env.RETIZERO_WEIGHTS_URL != '' }}
-        run: |
-          echo "Downloading RetiZero weights from provided URL"
-          python - <<'PY'
-import os, subprocess, sys
-url = os.environ.get('RETIZERO_WEIGHTS_URL')
-if not url:
-    print('No RETIZERO_WEIGHTS_URL set')
-    sys.exit(0)
-# try gdown first
-try:
-    import gdown
-    out = 'retizero_weights.pth'
-    gdown.download(url, out, quiet=False)
-    print('Downloaded to', out)
-except Exception:
-    # fallback to curl
-    print('gdown failed or not available, trying curl')
-    subprocess.check_call(['curl','-L', url, '-o', 'retizero_weights.pth'])
-PY
-
-      - name: Create results dir
-        run: mkdir -p results
-
-      - name: Run Gemini adapter
-        run: python src/run_gemini.py --input tests/test_metadata_subset.csv --output results/predictions.csv || true
+      - name: Regenerate pilot notebook from build_notebook.py
+        run: python build_notebook.py
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PILOT_MODE: "1"
 
-      - name: Run MedGemma adapter
-        run: python src/run_medgemma.py --input tests/test_metadata_subset.csv --output results/predictions.csv || true
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      - name: Validate notebook is well-formed JSON
+        run: python -c "import json; json.load(open('notebooks/DR_VLM_Comparison.ipynb'))"
 
-      - name: Run RetiZero adapter
-        run: python src/run_retizero.py --input tests/test_metadata_subset.csv --output results/predictions.csv --weights retizero_weights.pth || true
-
-      - name: Compute metrics
+      - name: Execute pilot notebook end to end
+        # Runs via nbclient directly (not the `jupyter nbconvert --execute` CLI) so the
+        # kernel's working directory is explicitly the repo root -- nbconvert's CLI
+        # defaults execution cwd to the notebook's own directory (notebooks/), which
+        # would make the notebook's "results/..." paths resolve to notebooks/results/
+        # instead of the repo-root results/ this workflow (and the README) expect.
         run: |
           python - <<'PY'
-import pandas as pd
-from sklearn.metrics import accuracy_score, cohen_kappa_score, mean_absolute_error
-df = pd.read_csv('results/predictions.csv')
-models = [c for c in df.columns if c.endswith('_pred')]
-lines = []
-for m in models:
-    valid = df.dropna(subset=[m,'diagnosis'])
-    if len(valid)==0:
-        lines.append(f"{m}: N=0")
-        continue
-    y_true = valid['diagnosis'].astype(int)
-    y_pred = valid[m].astype(int)
-    acc = accuracy_score(y_true, y_pred)
-    qwk = cohen_kappa_score(y_true, y_pred, weights='quadratic')
-    mae = mean_absolute_error(y_true, y_pred)
-    lines.append(f"{m}: N={len(valid)}, Accuracy={acc:.3f}, QWK={qwk:.3f}, MAE={mae:.3f}")
-print('\\n'.join(lines))
-with open('results/metrics.txt','w') as f:
-    f.write('\\n'.join(lines))
-PY
+          import nbformat
+          from nbclient import NotebookClient
 
-      - name: Commit results
-        uses: EndBug/add-and-commit@v9
-        with:
-          author_name: github-actions[bot]
-          author_email: github-actions[bot]@users.noreply.github.com
-          message: "Add real-run results (automated run)"
-          add: 'results/*'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          nb_path = "notebooks/DR_VLM_Comparison.ipynb"
+          nb = nbformat.read(nb_path, as_version=4)
+          client = NotebookClient(nb, timeout=300, resources={"metadata": {"path": "."}})
+          client.execute()
+          nbformat.write(nb, nb_path)
+          print("Pilot notebook executed successfully.")
+          PY
 
-      - name: Upload results artifact
+
+      - name: Check pilot artifacts were produced
+        run: |
+          test -f results/predictions.csv
+          test -f results/metrics.txt
+          wc -l results/predictions.csv
+          cat results/metrics.txt
+
+      - name: Upload pilot results artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dr-vlm-results
-          path: results/
+          name: dr-vlm-pilot-results
+          path: |
+            results/
+            notebooks/DR_VLM_Comparison.ipynb
