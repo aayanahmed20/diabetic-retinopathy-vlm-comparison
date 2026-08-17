@@ -1,154 +1,224 @@
 # Comparing Gemini, MedGemma, and RetiZero for Diabetic Retinopathy Grading
 
-> **Status:** filled in from a real, verified 18-image run (`results/` in this repo at the
-> commit this report was written against). Every ground-truth label was checked against
-> APTOS's own `train.csv` before these numbers were written. Only MedGemma produced valid
-> predictions in this run — Section VI explains why Gemini and RetiZero didn't, and
-> Section VII covers what would be needed to get all three.
+> ## PILOT RUN -- SYNTHETIC DATA, NOT REAL MODEL PERFORMANCE
+>
+> **Every number in this report comes from seeded, deterministic synthetic predictions,
+> not from real Gemini/MedGemma/RetiZero inference, and the 125-image sample is
+> synthetic metadata, not real APTOS images.** This report demonstrates that the
+> sampling, scoring, and reporting pipeline works end to end -- it makes zero claims
+> about how well any of the three models actually grades diabetic retinopathy.
+>
+> **Why:** the environment this pipeline was built and run in has no GPU, no Kaggle
+> account with the APTOS 2019 competition rules accepted, and no Gemini API key or
+> Hugging Face token. Real inference was not possible here.
+>
+> **What a real run needs:** a Colab GPU runtime, a Kaggle account (rules accepted for
+> the [APTOS 2019 competition](https://www.kaggle.com/competitions/aptos2019-blindness-detection/rules)),
+> a `GEMINI_API_KEY`, and an `HF_TOKEN` with the [MedGemma license](https://huggingface.co/google/medgemma-4b-it)
+> accepted. The real-run code path already exists and is structurally complete --
+> generate it with `PILOT_MODE=0 python build_notebook.py` (see `build_notebook.py`) --
+> but it has not been executed anywhere in this repository.
+>
+> A prior partial real run (18 real images, MedGemma only) does exist from before this
+> pilot; it is preserved as an appendix at the end of this report, clearly separated so
+> it cannot be confused with the pilot numbers below.
 
 ## Abstract
 
-This report compares three AI systems on a medical image-grading task: reading a retina
-photo and grading how severe a patient's diabetic retinopathy (DR) is, on the standard
-0-4 scale doctors use. The three systems are Gemini (a general-purpose AI, not built for
-medicine), MedGemma (an open-weight AI built specifically for medical images), and
-RetiZero (an AI built specifically for retina images). All three were shown the same 18
-real photos from the APTOS 2019 dataset, and their answers were checked against the
-dataset's own doctor-assigned grades. Only MedGemma actually produced answers — Gemini and
-RetiZero both hit technical errors on every image (explained in Section VI), so this
-report is really about MedGemma's performance, not a fair three-way race. MedGemma got the
-exact right grade 61.1% of the time (with a wide margin of error given only 18 images:
-39%-83%), and scored 0.801 on quadratic-weighted kappa — a standard scoring method for
-this exact task that gives partial credit for close guesses and full penalty for being way
-off (explained in Section III.D). MedGemma got every single "no DR" and the one "most
-severe" case exactly right, and got every case in between wrong — but always by guessing
-*too severe*, never too mild. That's a small enough sample that it's a real observation,
-not a strong conclusion.
+This report documents a **pilot run** of the diabetic-retinopathy VLM comparison
+pipeline: sampling, running three "models," and scoring the results against ground
+truth. Both the sample and the three models' predictions are **synthetic** in this run --
+a deterministically seeded stand-in for real Gemini API calls, real MedGemma inference,
+and real RetiZero inference, none of which were possible without a GPU or API
+credentials. The pipeline itself is what's under test here, not model quality: it
+generates a balanced 125-image synthetic sample (25 per ICDR grade, 0-4), produces one
+seeded pseudo-random prediction per image per model, and scores all three against
+synthetic ground truth using the same accuracy / quadratic-weighted kappa / MAE /
+bootstrap-CI / confusion-matrix code that a real run would use. Measured this way, all
+three "models" land close to the 20% chance rate expected of uniform random guessing
+over 5 balanced classes (Gemini 21.6%, MedGemma 23.2%, RetiZero 23.2%) -- which is the
+correct and expected outcome for a random predictor, and confirms the scoring code
+computes what it's supposed to. **None of these numbers say anything about Gemini,
+MedGemma, or RetiZero's real grading ability.**
 
 ## I. Introduction
 
-Diabetic retinopathy (DR) is damage to the blood vessels in the retina caused by long-term
-high blood sugar. It's one of the leading causes of vision loss in working-age adults with
-diabetes [1]. Untreated, it gets worse silently — starting mild and eventually causing
-serious, sometimes irreversible vision loss [2]. Regular eye photos, graded on a standard
-0 ("no DR") to 4 ("proliferative DR", the most severe stage) scale, are how doctors catch
-it early. But grading these photos by hand takes time, and even trained doctors don't
-always agree with each other on borderline cases — studies measuring doctor-to-doctor
-agreement report scores of 0.40-0.65 out of 1.0 [3], which is worth keeping in mind: the
-"correct answer" itself has some fuzziness built in.
+Diabetic retinopathy (DR) is damage to the blood vessels in the retina caused by
+long-term high blood sugar, and one of the leading causes of vision loss in working-age
+adults with diabetes [1]. Screening means grading fundus photos on the standard 0
+("no DR") to 4 ("proliferative DR") ICDR scale -- a slow manual process, and one where
+even trained graders disagree with each other on borderline cases (published
+inter-ophthalmologist agreement sits at kappa 0.40-0.65 [3]).
 
-AI systems that can look at an image and respond to instructions in plain language
-("vision-language models," or VLMs) offer a new way to approach this: instead of training
-a brand-new AI from scratch on thousands of labeled retina photos, you can just show an
-existing AI a photo and ask it to grade it. This report asks: how well does a
-general-purpose AI (Gemini), a medically-trained open AI (MedGemma), and a
-retina-specialist AI (RetiZero) each do at this, when shown the exact same photos and
-checked against the exact same answers? Because two of the three didn't produce usable
-answers in this run (Section VI), what this report actually answers is a smaller
-question: how well does MedGemma do, on its own.
+The eventual question this project is built to answer: can vision-language models grade
+DR automatically, and does medical-specific pretraining (MedGemma, RetiZero) actually
+help over a general-purpose model (Gemini)? Answering that requires real inference on
+real images, which this pilot run does not attempt. What this pilot run demonstrates
+instead is that the machinery needed to answer that question -- stratified sampling,
+per-model prediction, ordinal-aware scoring, confusion matrices, and reporting -- is
+built, wired together correctly, and actually executes without error. That is a smaller
+but necessary precondition for the real comparison.
 
 ## II. Related Work
 
-Most existing AI systems for DR grading are custom-built and trained specifically for the
-task, using thousands of labeled images from datasets like EyePACS and APTOS. MedGemma,
-the model this report focuses on, is built differently: Google combined a general
-language-and-vision AI (Gemma 3) with a second component trained specifically on tens of
-millions of medical images (MedSigLIP). In Google's own testing, that combination scored
-0.857 on a standard accuracy measure (AUC) for 5-level DR grading [4] — a different kind
-of test than the one in this report (their test used a simpler yes/no-style setup per
-grade; this report asks for one exact grade out of five), so the two numbers aren't
-directly comparable, but both point to the same underlying training. RetiZero, the third
-system this report set out to test, works differently again: instead of writing an answer,
-it was trained to match retina images to matching text descriptions across 341,896
-image-description pairs covering over 400 different eye conditions [5]. In its own
-original testing (on a broader set of eye diseases, not DR grading specifically), it beat
-the average score of 19 real eye doctors — a genuinely strong result, though for a
-different task than the one in this report.
-
-**For context — what a system built specifically for this exact competition can do:** the
-[1st-place solution](https://www.kaggle.com/competitions/aptos2019-blindness-detection/writeups/guanshuo-xu-1st-place-solution-summary)
-to the original 2019 Kaggle competition this dataset comes from, by Guanshuo Xu, used eight
-separate deep-learning models (trained specifically on retina images, not prompted) and
-combined their answers together. That system scored 0.936 on the same quadratic-weighted
-kappa metric used in this report [6] — noticeably higher than MedGemma's 0.801 here. That
-gap is expected, not surprising: Xu's system was built and trained from the ground up
-specifically for this task using thousands of training images, while MedGemma here is
-just being asked, in plain language, to grade a photo it was never specifically trained
-to grade. The comparison is useful context for how much headroom exists between "general
-AI, just asked nicely" and "AI built and trained for exactly this job."
+Unchanged from the intended real study: MedGemma combines Gemma 3 with MedSigLIP,
+trained on tens of millions of medical images, and scored 0.857 AUC on a different DR
+grading setup in Google's own evaluation [4]. RetiZero is a CLIP-style retinal
+foundation model trained on 341,896 image-caption pairs across 400+ eye conditions,
+and beat the average of 19 ophthalmologists in its own published evaluation on a
+broader disease set [5]. Neither claim is tested or touched by this pilot run --
+they describe the real systems this pipeline is built to eventually evaluate, not
+anything demonstrated here.
 
 ## III. Methods
 
-### A. Dataset
+### A. What "pilot run" means, concretely
 
-The photos and their doctor-assigned grades come from the APTOS 2019 Blindness Detection
-dataset on Kaggle: 3,662 retina photos, graded 0-4, collected by Aravind Eye Hospital [7].
-Grade 0 (no DR) is by far the most common in the full dataset (1,805 of 3,662 images);
-grade 3 (severe) is the rarest (193 images).
+Instead of the real pipeline's Kaggle download and three real model calls, this run
+substitutes:
 
+1. **Synthetic metadata** in place of a real APTOS download: `build_pilot_metadata()`
+   in `build_notebook.py` generates `N_PER_GRADE = 25` synthetic rows per ICDR grade
+   (125 total, balanced), with deterministic `id_code`s (`pilot_<grade>_<index>`) and a
+   deterministic shuffle order, both derived from `RANDOM_SEED = 42`. No real fundus
+   images exist or are read.
+2. **Seeded synthetic predictions** in place of real model calls:
+   `seeded_prediction(image_id, model_name)` combines the image ID and model name,
+   hashes them with SHA-256, and seeds Python's `random.Random` with the resulting
+   digest to draw one uniform integer in `[0, 4]`. This is deterministic across
+   machines and process runs -- unlike Python's built-in `hash()`, which is salted per
+   process by default (`PYTHONHASHSEED`) and was the (broken) basis of this
+   repository's previous, non-reproducible mock predictor.
+3. **Identical scoring code** to the real pipeline: accuracy, quadratic-weighted Cohen's
+   kappa, mean absolute error, a 1000-resample bootstrap 95% CI on accuracy, and a
+   confusion matrix, computed the same way regardless of where the predictions came
+   from.
+
+This produces `results/predictions.csv`, `results/metrics.txt`,
+`results/metrics_summary.json`, `results/summary_table.csv`, and two figures
+(`pilot_grade_distribution.png`, `pilot_confusion_matrices.png`), all copied into
+`reports/figures/` for this report.
 ### B. Sample
 
-The notebook this report is based on is built to pull a balanced sample — the same number
-of images from each of the 5 grades (25 each, 125 total) — so that rare, severe cases
-aren't drowned out by the common, mild ones. **This particular run didn't use that
-balanced sample.** Because of repeated technical issues getting a stable Colab session
-going (Section VI), the 18 images actually used here were gathered one at a time instead,
-and ended up skewed: 10 grade 0, 4 grade 1, 2 grade 2, 1 grade 3, 1 grade 4. Every one of
-those 18 grades was double-checked against APTOS's real `train.csv` before this report was
-written. The uneven mix is a real limitation on what this run's numbers can tell us — see
-Section VI.
+125 synthetic rows, exactly 25 per ICDR grade 0-4 (balanced by construction, not by
+post-hoc sampling), generated by the same code that also writes
+`tests/test_metadata_subset.csv` -- so the checked-in test fixture and the notebook's
+sample are guaranteed to match rather than silently drifting apart, which they did
+in a prior version of this repository.
 
-![The 18 images used in this run, labeled with their verified ground-truth grade](figures/sample_grid.png)
+![Synthetic pilot sample's class distribution -- 25 rows per grade, by construction](figures/pilot_grade_distribution.png)
 
-### C. Models and how each was asked to answer
+### C. Models
 
-| Model | How it runs | How it was asked |
-|---|---|---|
-| Gemini (`gemini-3.5-flash`) | Hosted API (Google's servers) | Shown the photo + written grading rules, asked to reply with just a digit 0-4 |
-| MedGemma (`google/medgemma-4b-it`) | Runs locally on a GPU | Same photo + same written rules, same one-digit answer format |
-| RetiZero | Runs locally on a GPU | Not asked a question at all — see below |
-
-Gemini and MedGemma were given the exact same instructions (the full text is in the
-Appendix) and asked to reply with a single digit. **RetiZero works completely
-differently.** It doesn't answer questions in words — it was trained to measure how
-similar an image is to a set of short text labels, using its own separate image-reading
-and text-reading components built for this purpose [5]. For this report, RetiZero was
-given the photo alongside the 5 grade names (e.g. "a fundus photograph of mild
-non-proliferative diabetic retinopathy") and picked whichever one matched best. Because
-it's answering in a fundamentally different way than the other two, its results (once
-working — see Section VI) won't be a perfectly apples-to-apples comparison; that's a real
-limitation, not just a technicality, and it's discussed further in Section VI.
+All three "models" are the same `seeded_prediction()` function called with a different
+`model_name` string, which is enough to give each one an independent (but still fully
+reproducible) uniform-random draw over the 5 grades. No prompting, no rubric, no API
+calls, no GPU inference happens in this run -- the real pipeline's Gemini prompt,
+MedGemma chat template, and RetiZero embedding-similarity code exist in
+`build_notebook.py`'s real-mode branch (`PILOT_MODE=0`) but are not exercised here.
 
 ### D. How performance was measured
 
-- **Accuracy** — how often the model's grade exactly matched the doctor's grade. Reported
-  with a margin of error (a range, not just one number), because 18 images is a small
-  sample and a different set of 18 images could easily give a somewhat different result.
-- **Quadratic-weighted kappa** — the standard scoring method for this exact task (it's
-  literally what the original Kaggle competition used to rank entries). In plain terms: it
-  gives close guesses partial credit and far-off guesses a much bigger penalty — mixing up
-  grade 3 and grade 4 counts as a small error, but calling a grade 4 (most severe) a grade
-  0 (no disease) counts as a much bigger one. It also adjusts for the fact that a model
-  could get some answers right just by luck.
-- **Mean absolute error** — on average, how many grade-levels off the model's guesses were.
-- **A confusion matrix** — a simple table showing exactly which grades got mixed up with
-  which other grades.
+Same as the real pipeline would use:
+- **Accuracy**, with a percentile bootstrap 95% CI (1000 resamples) -- honest
+  uncertainty bounds even though N=125 here is the full intended sample size.
+- **Quadratic-weighted Cohen's kappa** -- the standard ordinal-aware metric for this
+  task (and the original Kaggle competition's own scoring metric).
+- **Mean absolute error** in grade-steps.
+- **Confusion matrices**, one per model.
 
 ## IV. Results
 
+Single run, `RANDOM_SEED = 42`, executed via `jupyter nbclient` end to end with no
+errors. Numbers below are copied verbatim from `results/metrics.txt`, and agree exactly
+with `results/metrics_summary.json`, `results/summary_table.csv`, and
+`results/predictions.csv` (same run, same seed):
+
+| Model | N scored | Accuracy | Accuracy 95% CI | Quadratic-weighted kappa | MAE (grade-steps) |
+|---|---|---|---|---|---|
+| Gemini (synthetic) | 125 | 0.216 | [0.144, 0.288] | -0.0602 | 1.632 |
+| MedGemma (synthetic) | 125 | 0.232 | [0.160, 0.304] | 0.1785 | 1.416 |
+| RetiZero (synthetic) | 125 | 0.232 | [0.160, 0.312] | -0.0697 | 1.528 |
+
+Chance-level accuracy for a uniform random guess over 5 balanced classes is 20% -- all
+three land within or just above their bootstrap CI of that, which is exactly what a
+correctly-implemented random predictor should produce. The one kappa value that looks
+non-trivial (MedGemma's 0.1785) is sampling noise from a single seeded draw, not a
+signal: there is no mechanism in `seeded_prediction()` that could make one model's
+synthetic output correlate with ground truth more than another's, and a second run with
+a different seed would move all three numbers around unpredictably (see the
+determinism note below for what *does* stay fixed across runs).
+
+![Confusion matrices for the three synthetic prediction streams -- diagonal weight close to 1-in-5 per row, consistent with uniform random draws, not with any model actually learning to grade](figures/pilot_confusion_matrices.png)
+
+## V. Discussion
+
+**What this pilot demonstrates:** the sampling step produces a genuinely balanced,
+reproducible 125-image table; each model's prediction function is called correctly and
+produces a value for every image (no missing predictions, no crashes); the scoring code
+runs quadratic-weighted kappa, MAE, and bootstrap CI correctly on the resulting table;
+and the whole notebook executes top to bottom without manual intervention. That is the
+complete list of things this pilot run is evidence for.
+
+**What this pilot run is not evidence for:** anything about Gemini, MedGemma, or
+RetiZero's actual ability to grade diabetic retinopathy. The near-chance accuracy and
+inconsistent kappa signs across the three "models" are the expected signature of
+independent uniform-random draws, not a finding about model quality, and should not be
+read as "all three models perform similarly" or "MedGemma slightly outperforms the
+others" -- there are no real models being compared here.
+
+## VI. Limitations
+
+- **No real images or real model calls.** This is the central limitation and the reason
+  for the banner at the top of this report. Every prediction is `random.Random(sha256(...))`,
+  not API/GPU output.
+- **Synthetic ground truth, not real APTOS labels.** The real dataset's ground truth is
+  also just one grader's opinion (kappa 0.40-0.65 inter-grader agreement [3]) -- a
+  caveat that will still apply once a real run happens, in addition to today's larger
+  caveat that there's no real ground truth here at all.
+- **RetiZero's real mechanism (embedding-similarity argmax over label strings, not a
+  generated digit) is not exercised in this run** -- in pilot mode it uses the exact
+  same `seeded_prediction()` call as the other two, so the "mechanically different task"
+  distinction that matters for a real three-way comparison doesn't apply here.
+- **Single seed, single run.** `RANDOM_SEED = 42` was used once. Re-running with the
+  same seed reproduces these exact numbers (verified: two independent regenerate-and-execute
+  cycles, including with different `PYTHONHASHSEED` values, produced byte-identical
+  `results/predictions.csv` and `results/metrics.txt`). A different seed would produce
+  different near-chance numbers, since there is no true signal to converge on.
+- **Not a medical device, not a research finding.** This is infrastructure validation,
+  not a clinical or scientific claim about any of the three systems.
+
+## VII. Conclusion
+
+The pipeline -- synthetic stratified sampling, per-model prediction, ordinal-aware
+scoring, plotting, and reporting -- runs end to end without error and produces
+internally consistent, reproducible output. That is what this pilot run set out to
+prove, and it does. The next step toward the real comparison this project is ultimately
+for is running `build_notebook.py` with `PILOT_MODE=0` on a Colab GPU runtime with real
+Kaggle/Gemini/Hugging Face credentials, which would replace every number in Section IV
+with real model output on real fundus images.
+---
+
+## Appendix: prior partial real run (18 images, MedGemma only, 2026-08-08)
+
+The section below is preserved from a prior, separate attempt at a real run, before this
+pilot existed. It used 18 real APTOS images (not the balanced 125-image sample) and only
+MedGemma produced valid predictions; Gemini and RetiZero both failed outright. **These
+numbers are real model output, not synthetic** -- but they are a different, smaller,
+unbalanced run than the pilot above, executed on a different date, and are kept here
+only for reference. Do not combine these numbers with the pilot results in Section IV
+above -- they measure different things (one real model on 18 unbalanced images, vs. three
+synthetic predictors on 125 balanced images).
+
+### Results (prior real run)
+
 | Model | Images answered | Accuracy (margin of error) | Quadratic-weighted kappa | Average error (grade-levels) |
 |---|---|---|---|---|
-| Gemini | 0 of 18 | no valid answers — see Section VI | — | — |
+| Gemini | 0 of 18 | no valid answers -- see below | -- | -- |
 | MedGemma | 18 of 18 | 61.1% (39%-83%) | 0.801 | 0.556 |
-| RetiZero | 0 of 18 | no valid answers — see Section VI | — | — |
+| RetiZero | 0 of 18 | no valid answers -- see below | -- | -- |
 
-Gemini and RetiZero didn't produce a single valid answer across all 18 images — not a
-partial failure, a complete one, and the same error every time (the specific technical
-causes are in Section VI). Only MedGemma's results are discussed below.
-
-MedGemma's confusion matrix (true grade on the left, what MedGemma guessed along the top):
-
-![Confusion matrices for all three models (only MedGemma has data; Gemini and RetiZero show zero predictions)](figures/confusion_matrices.png)
+MedGemma's confusion matrix (true grade on the left, MedGemma's guess along the top):
 
 | True grade \ MedGemma's guess | 0 | 1 | 2 | 3 | 4 |
 |---|---|---|---|---|---|
@@ -158,129 +228,32 @@ MedGemma's confusion matrix (true grade on the left, what MedGemma guessed along
 | **3 (severe)** | 0 | 0 | 0 | 0 | 1 |
 | **4 (proliferative)** | 0 | 0 | 0 | 0 | 1 |
 
-MedGemma got all 10 "no DR" photos right, and the one "most severe" photo right — perfect
-at both ends of the scale. Every photo in between (grades 1, 2, and 3 — seven photos
-total) was graded wrong, and in every single case, MedGemma guessed *more severe* than the
-real grade, never less. That one-directional pattern is exactly why the kappa score
-(0.801) looks so much better than the plain accuracy (61.1%): kappa gives partial credit
-for "close" wrong answers, and MedGemma's wrong answers were consistently close and
-one-directional rather than scattered randomly. The wide margin of error on accuracy
-(39%-83%) isn't a flaw in the math — it's just an honest reflection of how little 18
-images can prove on its own.
+MedGemma got all 10 "no DR" photos right and the one "most severe" photo right, and
+missed every in-between photo (grades 1-3, seven photos total) -- always guessing more
+severe than the true grade, never less. Sample size was too small (one or two images per
+mid-range grade) to treat this as more than a single observation.
 
-## V. Discussion
+**Why Gemini and RetiZero failed in this prior run:** Gemini hit
+`404 NOT_FOUND: models/gemini-1.5-flash is not found for API version v1beta` -- a stale
+model name from ad hoc edits made directly in that Colab session, not a problem with
+this repository's own code (which specifies `gemini-3.5-flash`). RetiZero hit
+`Input type (torch.cuda.FloatTensor) and weight type (torch.FloatTensor) should be the
+same` -- a CPU/GPU device mismatch from an earlier device-splitting approach, since fixed
+in `build_notebook.py`'s real-mode path (RetiZero now loads onto the GPU only after
+MedGemma's memory is freed, never split across devices). Both are fixable setup problems
+specific to that one session, not findings about model quality, and neither has been
+re-run since.
 
-The clearest pattern here is directional: MedGemma never guessed *too mild*. Every mistake
-went the other way — guessing more severe than reality, never less. For a tool meant to
-flag patients who need a closer look from a doctor, that's the safer kind of mistake to
-make (a false alarm sends someone to a specialist unnecessarily; a missed case delays
-treatment they actually need). If that pattern held up at a larger scale, it would be a
-genuinely good sign. But with only seven wrong answers total, it's just as possible this
-is a coincidence of which seven photos happened to get sampled, not a real tendency of the
-model.
+**Sample for this prior run:** 18 real, individually verified APTOS images, skewed
+10/4/2/1/1 across grades 0-4 -- not the balanced 25-per-grade sample the pipeline is
+designed to draw, gathered one at a time due to repeated Colab session instability at
+the time.
 
-The other notable pattern: MedGemma was perfect on the two clearest cases (no disease,
-worst disease) and wrong on every unclear, in-between case. That lines up with something
-plausible — that it's easier for both AI models and human doctors to agree on the extremes
-than on the fuzzy middle ground (recall from Section I that even doctors only agree with
-each other 40-65% of the time on these borderline grades [3]). But this run only had one
-or two photos per in-between grade, which isn't enough to tell "MedGemma genuinely
-struggles with the middle grades" apart from "these seven particular photos happened to be
-hard." Telling those two apart is exactly what a larger, balanced sample (Section III.B)
-would help answer.
-
-No comparison between the three models is possible from this run, since only one of the
-three models actually worked. This report describes what MedGemma did on 18 real, double-checked photos — it isn't a three-way race.
-
-## VI. Limitations
-
-- **Small, uneven sample.** 18 images, not spread evenly across grades — 10 of the 18 were
-  the mildest grade, and grades 3 and 4 had only one photo each. The wide margin of error
-  on accuracy (39%-83%) is a direct, honest consequence of that. With only one photo per
-  grade in some cases, a single wrong guess swings that grade's "correct" rate from 100%
-  straight down to 0% — which is basically what happened here.
-- **Only one of three models actually worked.** Gemini failed on all 18 images with the
-  same error: `404 NOT_FOUND: models/gemini-1.5-flash is not found for API version
-  v1beta`. That error means the live session ended up using a different (older) Gemini
-  model and an older way of calling it than what this repository's actual notebook
-  specifies (`gemini-3.5-flash`, using Google's current library — see `build_notebook.py`
-  in this repo). That mismatch happened because of live, on-the-fly edits made directly in
-  the Colab session while troubleshooting earlier errors — not a problem with this
-  repository's own code, and not a problem with Gemini itself. RetiZero failed on all 18
-  images with `Input type (torch.cuda.FloatTensor) and weight type (torch.FloatTensor)
-  should be the same` — a mismatch between data that ended up on the GPU and a model that
-  had been moved to the regular processor (done to avoid running out of GPU memory
-  alongside MedGemma, which is a large model on its own). Both are fixable setup problems,
-  not findings about how good either model actually is at this task, and both should be
-  re-run starting from this repository's own notebook rather than a session with a long
-  history of accumulated live patches.
-- **The "correct" answer is itself one doctor's opinion**, not a perfect ground truth —
-  doctors grading the same photo only agree with each other 40%-65% of the time in
-  published studies [3]. (Every grade used in this report was double-checked against
-  APTOS's real data file before writing this up, so there's no concern about wrong labels
-  here — just the underlying fact that even real doctors sometimes disagree.)
-- **RetiZero answers in a fundamentally different way** than the other two models (picking
-  the closest matching label instead of writing an answer), which may help or hurt it
-  compared to the others in ways that have nothing to do with which model actually "knows"
-  DR grading better. This stays a real limitation for the eventual three-way comparison
-  once RetiZero is successfully re-run.
-- **Gemini isn't a medical AI** — it has no disclosed medical-specific training, unlike
-  MedGemma and RetiZero. The eventual full comparison is really testing "general AI" against
-  two different kinds of medically-specialized AI, not three equally-prepared systems.
-- **Just one run, one sample.** No repeat runs or different random samples were done; the
-  "always guesses too severe" pattern in Section IV is one observation, not something
-  confirmed to repeat.
-- **Not a medical device.** None of these three models is approved or validated for real
-  diagnosis. This is a benchmarking exercise for a class project, not a clinical tool.
-
-## VII. Conclusion
-
-On a small, unevenly-sampled set of 18 real retina photos, MedGemma correctly graded 61.1%
-exactly right, and scored 0.801 on the standard kappa metric for this task — with a
-notable pattern where every mistake erred toward *too severe*, never too mild, and perfect
-scores on the clearest cases (no disease, worst disease). That's a real, specific,
-double-checked result — but it describes MedGemma alone, on a small sample, not a
-three-way comparison. Gemini and RetiZero both failed to produce any answers in this run
-because of fixable setup problems (Section VI), not because of anything about the models
-themselves. For useful context, a system built and trained specifically for this exact
-Kaggle competition scored 0.936 on the same metric [6] — a reminder of how much of a head
-start a purpose-built, fully-trained system has over a general AI just being asked
-nicely. The clear next step is running the notebook's intended balanced sample (equal
-photos per grade) with Gemini and RetiZero's setup issues fixed, using this repository's
-own notebook rather than a live-patched session — that would both narrow the margins of
-error a lot and finally make the three-way comparison this project set out to do possible.
-
----
-
-## Mock Results (deterministic)
-
-The repository's mock evaluation validates the pipeline and reporting format. These numbers
-are deterministic pseudo-predictions used only to exercise the downstream analysis code —
-they are NOT real model outputs and must not be used as experimental or clinical claims.
-
-Summary metrics (mock, N=125):
-
-- Gemini (mock)
-  - N = 125
-  - Accuracy = 0.44
-  - QWK = 0.32
-  - MAE = 0.86
-
-- MedGemma (mock)
-  - N = 125
-  - Accuracy = 0.46
-  - QWK = 0.35
-  - MAE = 0.81
-
-- RetiZero (mock)
-  - N = 125
-  - Accuracy = 0.49
-  - QWK = 0.38
-  - MAE = 0.74
-
-Note: these mock numbers come from the deterministic `--mock` pipeline and are included
-here to demonstrate the report format and downstream plotting/aggregation. Replace them
-with real-run numbers after re-running the adapters with real credentials and weights.
+**Context from the original 2019 Kaggle competition:** the
+[1st-place solution](https://www.kaggle.com/competitions/aptos2019-blindness-detection/writeups/guanshuo-xu-1st-place-solution-summary)
+(eight trained deep-learning models, ensembled) scored 0.936 quadratic-weighted kappa on
+this same dataset [6] -- context for how much headroom exists between a purpose-built,
+fully-trained system and a general VLM prompted to do the same task.
 
 ---
 
@@ -302,10 +275,7 @@ with real-run numbers after re-running the adapters with real credentials and we
 [7] APTOS 2019 Blindness Detection, Asia Pacific Tele-Ophthalmology Society, Kaggle,
     2019.
 
-*[Verify all DOIs and full bibliographic entries against the published versions before
-submission; these are the real source works the background section draws on.]*
-
-## Appendix: Exact prompt used
+## Appendix: exact ICDR prompt (real-mode only, not used in the pilot run)
 
 ```
 You are assisting with diabetic retinopathy severity grading on a color fundus
@@ -322,4 +292,5 @@ Grade strictly on this rubric:
 Respond with ONLY a single digit 0-4. No words, no punctuation, no explanation.
 ```
 
-(Adapted from `ICDR_PROMPT` in the notebook.)
+(From `ICDR_PROMPT` in `build_notebook.py`'s real-mode branch. Not used to produce any
+number in this report -- the pilot run above never calls a real model.)
