@@ -1,12 +1,41 @@
 """
 Builds notebooks/DR_VLM_Comparison.ipynb
+
 Run once locally to (re)generate the notebook file:
 
     python build_notebook.py
 
 Requires: pip install nbformat
+
+PILOT_MODE
+----------
+This script generates ONE of two notebooks depending on the PILOT_MODE env var
+(default: on). There is no separate adapter-script or subprocess architecture -- this
+file is the single source of truth for both modes.
+
+  PILOT_MODE=1 (default): generates the pilot notebook. No GPU, no Kaggle account, no
+  Gemini/HF API keys required or used. Instead of downloading APTOS and calling real
+  models, it builds a synthetic, balanced, stratified 125-image metadata table and
+  produces a seeded, deterministic synthetic prediction per (image, model) pair via
+  `seeded_prediction()` below (SHA-256 + `random.Random`, NOT Python's built-in `hash()`,
+  which is process-randomized by default and therefore not reproducible run to run).
+  This is the mode this repository ships with and the one actually executed and verified
+  end-to-end (see reports/final_report.md).
+
+  PILOT_MODE=0: generates the real-run notebook -- real Kaggle download, real Gemini API
+  calls, real MedGemma/RetiZero GPU inference. Requires a Colab GPU runtime and
+  GEMINI_API_KEY / HF_TOKEN secrets. This mode has NOT been executed in this repository
+  (no GPU/Kaggle/API credentials are available in the authoring environment) -- treat it
+  as reviewed-but-unverified until someone runs it on real hardware.
+
+Every markdown/print statement in the pilot notebook says PILOT RUN explicitly so nobody
+mistakes the synthetic numbers in results/ for real model performance.
 """
+import os
+
 import nbformat as nbf
+
+PILOT_MODE = os.environ.get("PILOT_MODE", "1").strip().lower() not in ("0", "false", "no")
 
 nb = nbf.v4.new_notebook()
 cells = []
@@ -21,23 +50,101 @@ def code(text):
 
 
 # ---------------------------------------------------------------------------
-md("""\
+# Shared: the exact synthetic-metadata generator used both to write this notebook's
+# sampling cell AND tests/test_metadata_subset.csv, so the two can never drift apart the
+# way the old hand-typed mock files did. Executed for real below (not just embedded as
+# text) whenever this script runs in PILOT_MODE, to (re)write the test fixture.
+PILOT_METADATA_SRC = '''\
+def build_pilot_metadata(n_per_grade=N_PER_GRADE, seed=RANDOM_SEED):
+    """Deterministic synthetic metadata: n_per_grade images per ICDR grade 0-4 (125 total
+    at the default N_PER_GRADE=25), balanced and reproducible from `seed` alone -- no
+    Kaggle download, no real images. image_path points at a placeholder path; PILOT_MODE
+    never opens it, since predictions come from seeded_prediction(), not real inference.
+    """
+    rows = []
+    for grade in range(5):
+        for i in range(n_per_grade):
+            id_code = f"pilot_{grade}_{i:03d}"
+            rows.append({
+                "id_code": id_code,
+                "image_path": f"synthetic/{id_code}.png",
+                "diagnosis": grade,
+                "grade_name": GRADE_NAMES[grade],
+            })
+    rng = random.Random(seed)
+    rng.shuffle(rows)
+    return rows
+'''
+
+SEEDED_PREDICTION_SRC = '''\
+def seeded_prediction(image_id, model_name, num_classes=5):
+    """Deterministic seeded synthetic prediction, uniform over 0..num_classes-1.
+
+    Same (image_id, model_name) always yields the same output, on any machine, any
+    process, any Python invocation -- unlike Python's built-in hash(), which is salted
+    per-process by default (PYTHONHASHSEED) and therefore NOT reproducible run to run.
+    hashlib.sha256 has no such salt, which is exactly why it is used here instead.
+
+    This is a uniform random draw, not a simulated model -- it makes no attempt to look
+    like a plausible real model's accuracy or to fake a difference between models. Any
+    accuracy/kappa above chance in the pilot results is sampling noise, not a claim about
+    real model quality.
+    """
+    digest = hashlib.sha256(f"{image_id}:{model_name}".encode("utf-8")).hexdigest()
+    rng = random.Random(digest)
+    return rng.randrange(num_classes)
+'''
+
+# ---------------------------------------------------------------------------
+if PILOT_MODE:
+    md("""\
+# Diabetic Retinopathy Grading: Gemini vs. MedGemma vs. RetiZero
+
+**Comparing three vision-language models on ICDR-graded fundus images (APTOS 2019)**
+
+> ## PILOT RUN -- SYNTHETIC DATA, NOT REAL MODEL OUTPUT
+>
+> This notebook is running in **PILOT_MODE** (the default in `build_notebook.py`). There
+> is no GPU, no Kaggle account, and no Gemini/Hugging Face API access in the environment
+> that produced this notebook, so every prediction below is a **seeded, deterministic
+> synthetic value** -- not a real API call and not real model inference. The dataset
+> itself is also synthetic: a generated, balanced, stratified metadata table, not a real
+> Kaggle download.
+>
+> This exists to prove the scoring/reporting pipeline (sampling, checkpointing, metrics,
+> plots) works end to end. It proves nothing about how well Gemini, MedGemma, or RetiZero
+> actually grade diabetic retinopathy. See `reports/final_report.md` for the honest
+> write-up and `build_notebook.py` (`PILOT_MODE=0`) for the real-run path -- real Kaggle
+> download, real Gemini API calls, real MedGemma/RetiZero GPU inference -- which has not
+> been executed anywhere in this repository yet.
+""")
+else:
+    md("""\
 # Diabetic Retinopathy Grading: Gemini vs. MedGemma vs. RetiZero
 
 **Comparing three vision-language models on ICDR-graded fundus images (APTOS 2019)**
 
 This notebook downloads the dataset, samples images across ICDR grades 0-4, runs all
 three models, and scores each one (accuracy + 95% CI, quadratic-weighted kappa, MAE,
-confusion matrices) — writing everything to `results/`.
+confusion matrices) -- writing everything to `results/`.
 
 **Sample size:** `N_PER_GRADE = 25` below (125 images total) is the statistically
-defensible default. Drop it to `2` only for a quick smoke test of the pipeline — don't
+defensible default. Drop it to `2` only for a quick smoke test of the pipeline -- don't
 report those numbers as a result.
+
+**This is the real-run notebook** (generated with `PILOT_MODE=0`). It requires a Colab
+GPU runtime, a Kaggle account with the APTOS 2019 competition rules accepted, and
+`GEMINI_API_KEY` / `HF_TOKEN` secrets. It has not been executed end-to-end in this
+repository -- no GPU/Kaggle/API credentials exist in the authoring environment. The
+notebook actually checked into `notebooks/DR_VLM_Comparison.ipynb` right now is the pilot
+notebook (`PILOT_MODE=1`, the default) -- regenerate with `PILOT_MODE=0 python
+build_notebook.py` if you have real credentials and want to run this version instead.
 """)
 
 # ---------------------------------------------------------------------------
 md("## 0. Configuration")
-code("""\
+code(f"""\
+PILOT_MODE = {PILOT_MODE!r}            # set by build_notebook.py's PILOT_MODE env var at generation time
 N_PER_GRADE = 25                      # images sampled per ICDR grade (0-4). 25 -> 125 total images (statistically defensible; drop to 2 for a 10-image smoke test).
 RANDOM_SEED = 42                       # change for a different random draw; keep fixed for reproducibility
 GEMINI_MODEL = "gemini-3.5-flash"      # current stable Gemini vision model (gemini-2.5-flash is being retired Oct 2026 -- already seeing early "model not found" errors in the wild, so don't use it)
@@ -46,35 +153,149 @@ RETIZERO_REPO = "https://github.com/LooKing9218/RetiZero.git"
 RETIZERO_WEIGHTS_GDRIVE_ID = "14bMmnefO73_NL1Xc4x0A5qFNbuI7GqKM"  # from the RetiZero README
 RETIZERO_WEIGHTS_PATH = "/content/RetiZero/checkpoints/retizero_weights.pth"
 CONTENT_ROOT = "/content"
-RESULTS_DIR = "/content/results"
+RESULTS_DIR = "results"
+REPORTS_DIR = "reports"
 
 # Maps the integer ICDR grade (as stored in the dataset's "diagnosis" column) to its
 # clinical name, used for plot titles and the printed class distribution below.
-GRADE_NAMES = {
+GRADE_NAMES = {{
     0: "No DR",
     1: "Mild NPDR",
     2: "Moderate NPDR",
     3: "Severe NPDR",
     4: "Proliferative DR",
-}
+}}
+
+print(f"PILOT_MODE = {{PILOT_MODE}}")
+if PILOT_MODE:
+    print("PILOT RUN -- synthetic data and seeded mock predictions only. See markdown above.")
 """)
 
-# ---------------------------------------------------------------------------
-md("## 1. Install dependencies")
-code("""\
+if PILOT_MODE:
+    # -----------------------------------------------------------------------
+    md("""\
+## 1. Build the synthetic, stratified sample (PILOT_MODE)
+
+No Kaggle download in pilot mode. `build_pilot_metadata()` below generates a balanced,
+stratified table -- `N_PER_GRADE` images per ICDR grade 0-4 -- deterministically from
+`RANDOM_SEED`. This is the exact same function used to (re)generate
+`tests/test_metadata_subset.csv`, so the committed fixture and this notebook's sample can
+never silently drift apart.
+""")
+    code("""\
+import os
+import random
+import hashlib
+import numpy as np
+import pandas as pd
+
+os.makedirs(RESULTS_DIR, exist_ok=True)
+
+""" + PILOT_METADATA_SRC + """
+sample_df = pd.DataFrame(build_pilot_metadata())
+print(f"Built {len(sample_df)} synthetic rows ({N_PER_GRADE} per grade x 5 grades):")
+print("Class distribution (synthetic ground truth):")
+print(sample_df["diagnosis"].value_counts().sort_index())
+sample_df.head()
+""")
+
+    md("## 2. Visualize the sample's class distribution")
+    code("""\
+import matplotlib.pyplot as plt
+
+# No real images to lay out in a grid (PILOT_MODE has none) -- a class-distribution bar
+# chart is the pilot-mode equivalent: it shows the sample is genuinely balanced, which is
+# the thing that mattered about the sample grid in the real-run notebook.
+counts = sample_df["diagnosis"].value_counts().sort_index()
+fig, ax = plt.subplots(figsize=(6, 4))
+ax.bar([GRADE_NAMES[g] for g in counts.index], counts.values, color="#4C72B0")
+ax.set_ylabel("Count")
+ax.set_title(f"PILOT RUN -- synthetic sample class distribution (N={len(sample_df)})")
+plt.xticks(rotation=20, ha="right")
+plt.tight_layout()
+plt.savefig(f"{RESULTS_DIR}/pilot_grade_distribution.png", dpi=150)
+plt.show()
+""")
+
+    # -----------------------------------------------------------------------
+    md("""\
+## 3. Seeded mock prediction function (used for all three "models")
+
+Every model section below calls this same function with a different `model_name`, which
+is enough to give each model an independent (but still fully reproducible) set of
+synthetic predictions -- no network calls, no GPU, no API keys.
+""")
+    code(SEEDED_PREDICTION_SRC)
+
+    md("""\
+## 4. Model 1 -- Gemini (PILOT_MODE: seeded mock, no API call)
+""")
+    code("""\
+def predict_gemini(image_id):
+    return seeded_prediction(image_id, "gemini")
+""")
+
+    md("""\
+## 5. Model 2 -- MedGemma (PILOT_MODE: seeded mock, no GPU inference)
+""")
+    code("""\
+def predict_medgemma(image_id):
+    return seeded_prediction(image_id, "medgemma")
+""")
+
+    md("""\
+## 6. Model 3 -- RetiZero (PILOT_MODE: seeded mock, no GPU inference)
+
+RetiZero is genuinely mechanically different from the other two in the real pipeline
+(embedding-similarity argmax over 5 label strings, not a generated digit) -- see the
+real-mode section below for that detail. In PILOT_MODE it produces a synthetic label the
+same way as the other two, since there is no real embedding model running here to be
+mechanically different from.
+""")
+    code("""\
+def predict_retizero(image_id):
+    return seeded_prediction(image_id, "retizero")
+""")
+
+    # -----------------------------------------------------------------------
+    md("""\
+## 7. Run all three "models" over the sample (PILOT_MODE)
+
+Deterministic and fast: no network, no GPU, no rate limits, no checkpointing needed
+(one pass regenerates the identical result every time).
+""")
+    code("""\
+print("PILOT RUN -- predictions below are synthetic, seeded mock outputs, not real model inference")
+
+results_df = sample_df.copy()
+results_df["ground_truth"] = results_df["diagnosis"].astype(int)
+results_df["gemini_pred"] = results_df["id_code"].apply(predict_gemini)
+results_df["medgemma_pred"] = results_df["id_code"].apply(predict_medgemma)
+results_df["retizero_pred"] = results_df["id_code"].apply(predict_retizero)
+
+predictions_path = f"{RESULTS_DIR}/predictions.csv"
+out_cols = ["id_code", "image_path", "ground_truth", "gemini_pred", "medgemma_pred", "retizero_pred"]
+results_df[out_cols].to_csv(predictions_path, index=False)
+print(f"Wrote {len(results_df)} rows to {predictions_path}")
+results_df[out_cols].head()
+""")
+else:
+    # -----------------------------------------------------------------------
+    md("## 1. Install dependencies")
+    code("""\
 # kaggle: dataset download | google-genai: Gemini API | transformers/accelerate/torch/torchvision: MedGemma + RetiZero
 # pillow/pandas/scikit-learn/matplotlib/seaborn: image I/O, data handling, metrics, plots | gdown: RetiZero weight download
 # tabulate: required by pandas.DataFrame.to_markdown() in Section 10, not pulled in by anything else here
 !pip install -q kaggle google-genai transformers accelerate torch torchvision pillow pandas scikit-learn matplotlib seaborn gdown tabulate
 """)
 
-# ---------------------------------------------------------------------------
-md("""\
+    # ---------------------------------------------------------------------------
+    md("""\
 ## 2. Check your Colab secrets
 
 This cell fails loudly and names any missing secret, rather than failing midway through the run.
 """)
-code("""\
+    code("""\
 from google.colab import userdata
 
 # Kaggle accepts EITHER the classic KAGGLE_USERNAME+KAGGLE_KEY pair OR the newer
@@ -83,7 +304,7 @@ from google.colab import userdata
 # (which would incorrectly demand all four Kaggle-related secrets at once).
 REQUIRED_SECRETS = ["GEMINI_API_KEY", "HF_TOKEN"]
 
-# userdata.get() raises if a secret isn't set — catch that per-name so one missing
+# userdata.get() raises if a secret isn't set -- catch that per-name so one missing
 # secret is reported clearly instead of stopping at the first one.
 for name in REQUIRED_SECRETS:
     try:
@@ -112,24 +333,24 @@ else:
     )
 """)
 
-# ---------------------------------------------------------------------------
-md("""\
+    # ---------------------------------------------------------------------------
+    md("""\
 ## 3. Get the APTOS 2019 dataset
 
-Two ways to get the data in — use whichever actually works for you. The cell below tries
+Two ways to get the data in -- use whichever actually works for you. The cell below tries
 both automatically, in this order:
 
 **Option A: Kaggle API** (works if `KAGGLE_USERNAME`/`KAGGLE_KEY` are set as Colab secrets
 *and* you've accepted the competition's rules at
 [kaggle.com/competitions/aptos2019-blindness-detection/rules](https://www.kaggle.com/competitions/aptos2019-blindness-detection/rules)
-— the API returns 401 Unauthorized until you do this once, in a browser, even with valid keys).
+-- the API returns 401 Unauthorized until you do this once, in a browser, even with valid keys).
 
 **Option B: manual upload** (use this if the API keeps failing). In a browser, on the
 [competition's Data tab](https://www.kaggle.com/competitions/aptos2019-blindness-detection/data),
-click **Download All** to get `aptos2019-blindness-detection.zip` (a few GB — this is the
+click **Download All** to get `aptos2019-blindness-detection.zip` (a few GB -- this is the
 full image set, not just the CSVs). Then get that zip file into Colab one of two ways:
 
-- **Google Drive (recommended)** — upload the zip to your Drive, then run:
+- **Google Drive (recommended)** -- upload the zip to your Drive, then run:
   ```python
   from google.colab import drive
   drive.mount("/content/drive")
@@ -137,11 +358,11 @@ full image set, not just the CSVs). Then get that zip file into Colab one of two
   in a new cell above this one. Once mounted, the cell below will find the zip
   automatically at `/content/drive/MyDrive/aptos2019-blindness-detection.zip`. This
   survives a runtime restart, so you only upload once even across multiple sessions.
-- **Direct upload** — use the Files panel (folder icon, left sidebar) to upload the zip
+- **Direct upload** -- use the Files panel (folder icon, left sidebar) to upload the zip
   straight into `/content/`. Faster to set up, but Colab deletes it when the runtime
   disconnects, so you'd need to re-upload after any restart.
 """)
-code("""\
+    code("""\
 import os
 
 CANDIDATE_ZIPS = [
@@ -205,7 +426,7 @@ if not os.path.exists(_train_csv) or _n_images < 1000:  # real dataset has 3,662
 print(f"Data OK: train.csv present, {_n_images} training images found.")
 """)
 
-code("""\
+    code("""\
 import pandas as pd
 
 train_csv = pd.read_csv("/content/aptos2019/train.csv")  # columns: id_code, diagnosis
@@ -220,12 +441,12 @@ print(train_csv["diagnosis"].value_counts().sort_index())
 train_csv.head()
 """)
 
-# ---------------------------------------------------------------------------
-md("""\
+    # ---------------------------------------------------------------------------
+    md("""\
 ## 4. Stratified random sample across ICDR grades 0-4
 """)
-code("""\
-# Sample N_PER_GRADE rows from each grade independently and concatenate — this is what
+    code("""\
+# Sample N_PER_GRADE rows from each grade independently and concatenate -- this is what
 # makes the sample "stratified": without it, a random draw from the raw dataset would be
 # dominated by grade 0 (the most common class) and barely include grade 3/4.
 sample_df = pd.concat([
@@ -238,7 +459,7 @@ print(f"Sampled {len(sample_df)} images:")
 sample_df[["id_code", "diagnosis", "grade_name"]]
 """)
 
-code("""\
+    code("""\
 import math
 import numpy as np
 import matplotlib.pyplot as plt
@@ -275,7 +496,7 @@ if low_variance:
     )
 
 # Each image's title shows its ground-truth grade, so this grid doubles as a visual
-# ground-truth reference — compare it against model predictions later in the notebook.
+# ground-truth reference -- compare it against model predictions later in the notebook.
 for ax, (_, row) in zip(axes, sample_df.iterrows()):
     img = Image.open(row["image_path"])
     ax.imshow(img)
@@ -286,14 +507,14 @@ plt.savefig("/content/sample_grid.png", dpi=150)
 plt.show()
 """)
 
-# ---------------------------------------------------------------------------
-md("""\
-## 5. Model 1 — Gemini (hosted API)
+    # ---------------------------------------------------------------------------
+    md("""\
+## 5. Model 1 -- Gemini (hosted API)
 
 The grading prompt below encodes the actual ICDR rubric rather than asking Gemini to
 free-associate a number, which noticeably improves grading consistency.
 """)
-code("""\
+    code("""\
 import time
 from google import genai
 from google.genai import types
@@ -331,7 +552,7 @@ class RateLimiter:
 # raise this to match and Section 8's thread pool will speed up proportionally.
 gemini_rate_limiter = RateLimiter(max_calls=5, window_s=60)
 
-# The rubric text below is the actual ICDR grading criteria, not a paraphrase — giving
+# The rubric text below is the actual ICDR grading criteria, not a paraphrase -- giving
 # Gemini the same definitions a human grader uses is what makes its answer comparable
 # to the dataset's ground truth (and to MedGemma/RetiZero, which grade against the same scale).
 ICDR_PROMPT = '''You are assisting with diabetic retinopathy severity grading on a color fundus
@@ -414,21 +635,21 @@ def predict_gemini(image_path, max_retries=5):
     if not candidates[0].content or not candidates[0].content.parts:
         raise RuntimeError(f"Gemini returned no text (finish_reason={finish_reason})")
 
-    # The prompt asks for a bare digit, but models occasionally add stray text anyway —
+    # The prompt asks for a bare digit, but models occasionally add stray text anyway --
     # pulling the first digit out of the response is more robust than assuming int(text) works.
     text = response.text.strip()
     digits = [c for c in text if c.isdigit()]
     return int(digits[0]) if digits else None
 """)
 
-# ---------------------------------------------------------------------------
-md("""\
-## 6. Model 2 — MedGemma (open weights, local GPU inference)
+    # ---------------------------------------------------------------------------
+    md("""\
+## 6. Model 2 -- MedGemma (open weights, local GPU inference)
 
 Requires accepting the license on the [MedGemma model page](https://huggingface.co/google/medgemma-4b-it)
 with the same account as your `HF_TOKEN`. First load takes a few minutes.
 """)
-code("""\
+    code("""\
 import torch
 from transformers import AutoProcessor, AutoModelForImageTextToText
 
@@ -436,7 +657,7 @@ os.environ["HF_TOKEN"] = userdata.get("HF_TOKEN")
 
 # AutoProcessor handles both image preprocessing and text tokenization for MedGemma.
 # bfloat16 + device_map="auto" loads the 4B model in half precision, spread across
-# whatever GPU memory Colab gives you — full fp32 wouldn't fit on a T4.
+# whatever GPU memory Colab gives you -- full fp32 wouldn't fit on a T4.
 medgemma_processor = AutoProcessor.from_pretrained(MEDGEMMA_MODEL_ID, token=os.environ["HF_TOKEN"])
 medgemma_model = AutoModelForImageTextToText.from_pretrained(
     MEDGEMMA_MODEL_ID,
@@ -446,7 +667,7 @@ medgemma_model = AutoModelForImageTextToText.from_pretrained(
 )
 """)
 
-code("""\
+    code("""\
 def predict_medgemma(image_path):
     image = Image.open(image_path).convert("RGB")
     # MedGemma expects a chat-style message list, same format as text-only chat models,
@@ -479,38 +700,38 @@ def predict_medgemma(image_path):
     return int(digits[0]) if digits else None
 """)
 
-# ---------------------------------------------------------------------------
-md("""\
-## 7. Model 3 — RetiZero (zero-shot retinal foundation model)
+    # ---------------------------------------------------------------------------
+    md("""\
+## 7. Model 3 -- RetiZero (zero-shot retinal foundation model)
 
-RetiZero isn't generative — it's CLIP-style: it embeds the image and 5 candidate ICDR
+RetiZero isn't generative -- it's CLIP-style: it embeds the image and 5 candidate ICDR
 label strings, then takes the argmax of their cosine similarity. That's a mechanically
 different task than "write a digit" and should be reported as such, not as a fair
 three-way tie.
 
 **Dependency note:** RetiZero's own `requirements.txt` pins an old torch/transformers
-stack that would break MedGemma's modern one — we deliberately run it on the current
+stack that would break MedGemma's modern one -- we deliberately run it on the current
 Colab stack instead (its ViT code uses standard torch APIs and loads fine).
 
 **GPU memory note:** MedGemma alone uses several GB on a T4, and RetiZero needs its own
-chunk too — loading both onto the GPU at the same time risks a CUDA out-of-memory error.
+chunk too -- loading both onto the GPU at the same time risks a CUDA out-of-memory error.
 This cell only downloads RetiZero's weights; it doesn't load the model onto the GPU yet.
 Section 8 runs Gemini and MedGemma first, frees MedGemma's GPU memory, *then* loads
-RetiZero — so the two large models never compete for memory at the same time. (An earlier
+RetiZero -- so the two large models never compete for memory at the same time. (An earlier
 version of this notebook tried moving RetiZero to the CPU instead to solve this, but that
-introduced a device-mismatch bug — CPU model, GPU-loaded image tensors. Sequencing them
+introduced a device-mismatch bug -- CPU model, GPU-loaded image tensors. Sequencing them
 instead of splitting devices avoids that class of bug entirely.)
 """)
-code("""\
+    code("""\
 import os, sys
 
-# Clone the upstream RetiZero repo (only once — reuse it if this cell is re-run).
+# Clone the upstream RetiZero repo (only once -- reuse it if this cell is re-run).
 if not os.path.isdir("/content/RetiZero"):
     !git clone -q {RETIZERO_REPO} /content/RetiZero
 else:
     print("RetiZero repo already cloned")
 
-# The pretrained weights aren't in the repo (too large for git) or on pip/HF — they're
+# The pretrained weights aren't in the repo (too large for git) or on pip/HF -- they're
 # a Google Drive file, downloaded here by ID with gdown.
 os.makedirs("/content/RetiZero/checkpoints", exist_ok=True)
 if not os.path.exists(RETIZERO_WEIGHTS_PATH):
@@ -536,7 +757,7 @@ if _size_mb < 10:
 print(f"Weights file OK: {_size_mb:.0f} MB")
 """)
 
-code("""\
+    code("""\
 os.chdir("/content/RetiZero")       # RetiZero's own code does relative imports, so run from its root
 sys.path.insert(0, "/content/RetiZero")
 
@@ -563,10 +784,10 @@ def load_retizero():
     return model
 """)
 
-code("""\
+    code("""\
 # RetiZero embeds images against candidate text labels. Use the full ICDR disease names
 # (not "Moderate NPDR") because its text encoder is Bio_ClinicalBERT and its pretraining
-# captions are phrased as "a fundus photograph of <disease>" — full names map best.
+# captions are phrased as "a fundus photograph of <disease>" -- full names map best.
 RETIZERO_LABELS = [
     "no diabetic retinopathy",
     "mild non-proliferative diabetic retinopathy",
@@ -578,24 +799,24 @@ RETIZERO_LABELS = [
 def predict_retizero(image_path):
     image = Image.open(image_path).convert("RGB")
     # forward() embeds the image and the 5 label strings, then returns their similarity
-    # as (probability, logits) numpy arrays — argmax over probability gives the predicted grade.
+    # as (probability, logits) numpy arrays -- argmax over probability gives the predicted grade.
     # retizero_model is set by Section 8, right after loading it post-MedGemma-cleanup.
     with torch.no_grad():
         probability, _logits = retizero_model(image, RETIZERO_LABELS)
     return int(probability.argmax())
 """)
 
-# ---------------------------------------------------------------------------
-md("""\
+    # ---------------------------------------------------------------------------
+    md("""\
 ## 8. Run all three models over the sample
 
-Each prediction is wrapped so one model's failure doesn't kill the run — failed predictions
+Each prediction is wrapped so one model's failure doesn't kill the run -- failed predictions
 are recorded as `None` and dropped per-model at scoring time. Gemini API calls are spaced
 1s apart to stay polite to rate limits.
 
 **Two phases, not one loop.** Phase 1 runs Gemini and MedGemma over every image. Then
 MedGemma's GPU memory is explicitly freed, and *only then* is RetiZero loaded and run in
-Phase 2 — so MedGemma and RetiZero are never both resident on the GPU at once, which is
+Phase 2 -- so MedGemma and RetiZero are never both resident on the GPU at once, which is
 what a single combined loop risked (a CUDA out-of-memory error, since MedGemma alone uses
 several GB on a T4). This also means RetiZero stays on the GPU the whole time, the same
 device as its input images, avoiding the device-mismatch bugs that come from splitting a
@@ -603,16 +824,16 @@ model across CPU and GPU.
 
 **Both phases checkpoint continuously** to `results/predictions.csv` and skip `id_code`s
 already scored by every model in that phase. If the runtime crashes or restarts partway
-through, just re-run from wherever it stopped — nothing already-scored is lost or redone.
+through, just re-run from wherever it stopped -- nothing already-scored is lost or redone.
 
 **Phase 1 itself is two passes, for a reason.** Gemini calls are network-bound (waiting
-on a response, not on your GPU) but MedGemma calls are GPU-bound — running them in the
+on a response, not on your GPU) but MedGemma calls are GPU-bound -- running them in the
 same serial loop means every image pays for both delays back to back. Splitting them
 lets Gemini's calls run several at once (bounded by the rate limiter defined in Section
 5) while MedGemma runs after, at whatever speed the GPU allows, without also waiting on
 network round-trips it doesn't need.
 """)
-code("""\
+    code("""\
 import gc
 import time
 import pandas as pd
@@ -747,10 +968,10 @@ except Exception as e:
 
 if retizero_model is None:
     print("Skipping Phase 2 -- RetiZero didn't load (see error above). Re-run this cell after fixing it.")
-    results_df = pd.DataFrame(results)
+    results_df = pd.DataFrame(results_by_id.values())
 else:
     print(f"=== Phase 2: RetiZero over {len(sample_df)} images ===")
-    results_df = pd.DataFrame(results)  # refresh with Phase 1's results before appending retizero_pred
+    results_df = pd.DataFrame(results_by_id.values())  # refresh with Phase 1's results before appending retizero_pred
     retizero_done_ids = set(results_df.loc[results_df["retizero_pred"].notna(), "id_code"]) if "retizero_pred" in results_df.columns else set()
     for i, (_, row) in enumerate(sample_df.iterrows()):
         if row["id_code"] in retizero_done_ids:
@@ -779,16 +1000,20 @@ md("""\
 
 Diabetic retinopathy grades are **ordinal** (grade 3 is "closer to" grade 4 than to grade 0),
 so alongside plain accuracy we report:
-- **Quadratic-weighted Cohen's kappa** — the standard metric in the DR-grading literature
+- **Quadratic-weighted Cohen's kappa** -- the standard metric in the DR-grading literature
   (this is literally the Kaggle competition's own scoring metric); penalizes distant
   misclassifications more than adjacent ones, and corrects for chance agreement
 - **Mean absolute error (MAE)** in grade steps
-- **Bootstrap 95% CI on accuracy** — honest uncertainty bounds for small samples
+- **Bootstrap 95% CI on accuracy** -- honest uncertainty bounds for small samples
 - **Per-class precision/recall** and a **confusion matrix** per model
-
+""" + ("""
+**PILOT_MODE:** these numbers describe seeded random noise, not model skill -- see
+Section 7 above. Chance-level accuracy for 5 balanced classes is 20%; anything reported
+below should be read as "is the scoring math correct", not "is a model good".
+""" if PILOT_MODE else """
 If you ran the models across separate runtimes, re-upload the saved CSVs and merge them
 before this section.
-""")
+"""))
 code("""\
 import json
 import numpy as np
@@ -816,7 +1041,7 @@ def bootstrap_ci(y_true, y_pred, n_boot=1000, seed=RANDOM_SEED):
 for model_col in MODELS:
     model_name = model_col.replace("_pred", "")
     # Drop rows where this model's prediction is missing (failed calls from the run
-    # loop above) — each model is scored only on the images it actually predicted.
+    # loop above) -- each model is scored only on the images it actually predicted.
     valid = results_df.dropna(subset=[model_col])
     if len(valid) == 0:
         metrics_summary[model_name] = {"error": "no valid predictions"}
@@ -844,14 +1069,29 @@ for model_col in MODELS:
 with open(f"{RESULTS_DIR}/metrics_summary.json", "w") as f:
     json.dump(metrics_summary, f, indent=2)
 
+with open(f"{RESULTS_DIR}/metrics.txt", "w") as f:
+    for model_col in MODELS:
+        model_name = model_col.replace("_pred", "").capitalize()
+        m = metrics_summary.get(model_col.replace("_pred", ""), {})
+        if "error" in m:
+            f.write(f"{model_name}: {m['error']}\\n")
+        else:
+            f.write(
+                f"{model_name}: N={m['n_scored']}, Accuracy={m['accuracy']:.3f}, "
+                f"QWK={m['quadratic_weighted_kappa']:.3f}, MAE={m['mean_absolute_error_grades']:.3f}, "
+                f"Accuracy95CI={m['accuracy_95ci']}\\n"
+            )
+print(f"Wrote {RESULTS_DIR}/metrics_summary.json and {RESULTS_DIR}/metrics.txt")
+
 pd.DataFrame(metrics_summary).T
 """)
 
-code("""\
+code(("""\
 import seaborn as sns
 
 # One confusion matrix per model, side by side, so grading errors (e.g. always confusing
 # grade 2 and 3) are visible at a glance rather than buried in the summary metrics.
+""" + ('title_prefix = "PILOT RUN -- synthetic predictions -- "\n' if PILOT_MODE else 'title_prefix = ""\n')) + """\
 fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 for ax, model_col in zip(axes, MODELS):
     model_name = model_col.replace("_pred", "")
@@ -863,11 +1103,11 @@ for ax, model_col in zip(axes, MODELS):
     cm = confusion_matrix(valid["ground_truth"].astype(int), valid[model_col].astype(int), labels=[0, 1, 2, 3, 4])
     sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax,
                 xticklabels=range(5), yticklabels=range(5))
-    ax.set_title(model_name)
+    ax.set_title(title_prefix + model_name)
     ax.set_xlabel("Predicted grade")
     ax.set_ylabel("True grade")
 plt.tight_layout()
-plt.savefig(f"{RESULTS_DIR}/confusion_matrices.png", dpi=150)
+plt.savefig(f"{RESULTS_DIR}/""" + ("pilot_confusion_matrices.png" if PILOT_MODE else "confusion_matrices.png") + """", dpi=150)
 plt.show()
 """)
 
@@ -875,14 +1115,15 @@ plt.show()
 md("## 10. Export a results table for the report")
 code("""\
 # Same numbers as metrics_summary.json, reshaped into a table (one row per model) and
-# printed as Markdown so it can be pasted straight into reports/report_template.md.
+# printed as Markdown so it can be pasted straight into reports/final_report.md.
 summary_table = pd.DataFrame(metrics_summary).T
 summary_table.to_csv(f"{RESULTS_DIR}/summary_table.csv")
 print(summary_table.to_markdown())
 """)
 
-# ---------------------------------------------------------------------------
-md("""\
+if not PILOT_MODE:
+    # -----------------------------------------------------------------------
+    md("""\
 ## 11. Package and download results
 
 Run this when you're done. It bundles every artifact the report needs (`predictions.csv`,
@@ -890,7 +1131,7 @@ Run this when you're done. It bundles every artifact the report needs (`predicti
 into one tarball and triggers a browser download. Extract it into the repo root so the
 `results/` folder populates the report.
 """)
-code("""\
+    code("""\
 import tarfile
 
 # Bundle everything the write-up needs into one file so there's a single download instead
@@ -905,19 +1146,33 @@ files.download(tar_path)  # triggers a browser download in Colab
 print("Downloaded results.tar.gz -> extract into the repo root (creates results/)")
 """)
 
-md("""\
+md(("""\
+## 11. Notes and limitations (read before writing up results)
+
+- **This was a PILOT RUN.** Every prediction above is a seeded synthetic value from
+  `seeded_prediction()`, not real model output. Accuracy/kappa/MAE above measure whether
+  the scoring code is correct, not whether Gemini/MedGemma/RetiZero can grade DR.
+- **Ground truth here is also synthetic** -- a generated, balanced label set, not real
+  APTOS grades. The real dataset's ground truth is one grader's opinion, not an
+  infallible reference either (published inter-ophthalmologist ICDR agreement sits at
+  kappa 0.40-0.65) -- worth keeping in mind for the eventual real run too.
+- **The real-run path exists and is structurally complete** (`build_notebook.py` with
+  `PILOT_MODE=0`) but has not been executed anywhere in this repository -- no GPU/Kaggle/
+  API credentials in the authoring environment. See `reports/final_report.md` for what a
+  real run would need.
+""" if PILOT_MODE else """\
 ## 12. Notes and limitations (read before writing up results)
 
-Quick recap for the write-up — see the README for the full version:
+Quick recap for the write-up -- see the README for the full version:
 
-- **Ground truth is one grader's opinion, not an infallible reference** — published
+- **Ground truth is one grader's opinion, not an infallible reference** -- published
   inter-ophthalmologist ICDR agreement sits at kappa 0.40-0.65. Frame conclusions accordingly.
 - **Gemini is a generalist doing a specialist's task**; MedGemma and RetiZero were both
   medically pretrained. Say so rather than presenting three equivalent peers.
 - **This notebook is structurally complete but not yet run end-to-end on a GPU** (no
-  GPU/Kaggle access in the authoring environment) — the RetiZero wiring was checked
+  GPU/Kaggle access in the authoring environment) -- the RetiZero wiring was checked
   line-by-line against its upstream source, but budget time for first-run surprises.
-""")
+"""))
 
 nb["cells"] = cells
 nb["metadata"] = {
@@ -929,4 +1184,34 @@ nb["metadata"] = {
 with open("notebooks/DR_VLM_Comparison.ipynb", "w", encoding="utf-8") as f:
     nbf.write(nb, f)
 
-print("Notebook written to notebooks/DR_VLM_Comparison.ipynb")
+print(f"Notebook written to notebooks/DR_VLM_Comparison.ipynb (PILOT_MODE={PILOT_MODE})")
+
+# ---------------------------------------------------------------------------
+# In PILOT_MODE, also (re)write the committed test fixture from the exact same generator
+# function used inside the notebook above, so the two can never silently disagree.
+if PILOT_MODE:
+    _pilot_globals = {
+        "N_PER_GRADE": 25,
+        "RANDOM_SEED": 42,
+        "GRADE_NAMES": {
+            0: "No DR", 1: "Mild NPDR", 2: "Moderate NPDR", 3: "Severe NPDR", 4: "Proliferative DR",
+        },
+        "random": __import__("random"),
+    }
+    exec(PILOT_METADATA_SRC, _pilot_globals)
+    pilot_rows = _pilot_globals["build_pilot_metadata"]()
+
+    import csv
+
+    os.makedirs("tests", exist_ok=True)
+    with open("tests/test_metadata_subset.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["id_code", "image_path", "diagnosis"])
+        writer.writeheader()
+        for row in pilot_rows:
+            writer.writerow({
+                "id_code": row["id_code"],
+                "image_path": row["image_path"],
+                "diagnosis": row["diagnosis"],
+            })
+    print(f"tests/test_metadata_subset.csv written: {len(pilot_rows)} rows (balanced 25/grade, 0-4)")
+
