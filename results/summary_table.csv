@@ -1,0 +1,4 @@
+,n_scored,n_total,accuracy,accuracy_95ci,quadratic_weighted_kappa,mean_absolute_error_grades
+gemini,125,125,0.216,"[0.144, 0.288]",-0.0602,1.632
+medgemma,125,125,0.232,"[0.16, 0.304]",0.1785,1.416
+retizero,125,125,0.232,"[0.16, 0.312]",-0.0697,1.528
