@@ -1214,4 +1214,3 @@ if PILOT_MODE:
                 "diagnosis": row["diagnosis"],
             })
     print(f"tests/test_metadata_subset.csv written: {len(pilot_rows)} rows (balanced 25/grade, 0-4)")
-
