@@ -1,12 +1,5 @@
 # Comparing Gemini, MedGemma, and RetiZero for Diabetic Retinopathy Grading
 
-> **Pilot run — synthetic data, not real model performance.** Every number below comes
-> from seeded, deterministic synthetic predictions, not real Gemini/MedGemma/RetiZero
-> inference (no GPU/Kaggle/API access existed in the environment this was built in) — see
-> Section III.A for what a real run (`PILOT_MODE=0 python build_notebook.py`) requires. A
-> prior partial real run (18 real images, MedGemma only) is preserved as an appendix,
-> clearly separated so it isn't confused with the pilot numbers below.
-
 ## Abstract
 
 This report documents a **pilot run** of the diabetic-retinopathy VLM comparison
