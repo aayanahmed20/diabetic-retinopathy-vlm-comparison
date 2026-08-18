@@ -1,27 +1,11 @@
 # Comparing Gemini, MedGemma, and RetiZero for Diabetic Retinopathy Grading
 
-> ## PILOT RUN -- SYNTHETIC DATA, NOT REAL MODEL PERFORMANCE
->
-> **Every number in this report comes from seeded, deterministic synthetic predictions,
-> not from real Gemini/MedGemma/RetiZero inference, and the 125-image sample is
-> synthetic metadata, not real APTOS images.** This report demonstrates that the
-> sampling, scoring, and reporting pipeline works end to end -- it makes zero claims
-> about how well any of the three models actually grades diabetic retinopathy.
->
-> **Why:** the environment this pipeline was built and run in has no GPU, no Kaggle
-> account with the APTOS 2019 competition rules accepted, and no Gemini API key or
-> Hugging Face token. Real inference was not possible here.
->
-> **What a real run needs:** a Colab GPU runtime, a Kaggle account (rules accepted for
-> the [APTOS 2019 competition](https://www.kaggle.com/competitions/aptos2019-blindness-detection/rules)),
-> a `GEMINI_API_KEY`, and an `HF_TOKEN` with the [MedGemma license](https://huggingface.co/google/medgemma-4b-it)
-> accepted. The real-run code path already exists and is structurally complete --
-> generate it with `PILOT_MODE=0 python build_notebook.py` (see `build_notebook.py`) --
-> but it has not been executed anywhere in this repository.
->
-> A prior partial real run (18 real images, MedGemma only) does exist from before this
-> pilot; it is preserved as an appendix at the end of this report, clearly separated so
-> it cannot be confused with the pilot numbers below.
+> **Pilot run — synthetic data, not real model performance.** Every number below comes
+> from seeded, deterministic synthetic predictions, not real Gemini/MedGemma/RetiZero
+> inference (no GPU/Kaggle/API access existed in the environment this was built in) — see
+> Section III.A for what a real run (`PILOT_MODE=0 python build_notebook.py`) requires. A
+> prior partial real run (18 real images, MedGemma only) is preserved as an appendix,
+> clearly separated so it isn't confused with the pilot numbers below.
 
 ## Abstract
 
