@@ -10,17 +10,11 @@ A mini research project comparing three vision-language models on diabetic retin
 (DR) severity grading, scored against the [APTOS 2019 Blindness
 Detection](https://www.kaggle.com/competitions/aptos2019-blindness-detection) dataset.
 
-> **PILOT RUN NOTICE:** the results currently checked into this repo (`results/`,
-> `reports/final_report.md`) come from a **pilot run using synthetic data and seeded
-> mock predictions, not real model inference**. There is no GPU, Kaggle account, or
-> Gemini/Hugging Face API access in the environment this pipeline was built in, so
-> `build_notebook.py` defaults to `PILOT_MODE=1`: a generated, balanced 125-image sample
-> and a deterministic seeded random prediction per model, instead of a real Kaggle
-> download and real API/GPU calls. This proves the sampling/scoring/reporting pipeline
-> works end to end -- it says nothing about how well Gemini, MedGemma, or RetiZero
-> actually grade DR. See `reports/final_report.md` for the full disclosure and
-> `build_notebook.py` (`PILOT_MODE=0`) for the real-run path, which is structurally
-> complete but has not been executed anywhere in this repository.
+> **Pilot run:** the results checked into this repo (`results/`, `reports/final_report.md`)
+> come from synthetic data and seeded mock predictions, not real model inference — no
+> GPU/Kaggle/API access existed in the environment this was built in. See
+> [`reports/final_report.md`](reports/final_report.md) for the full disclosure and what a
+> real run (`PILOT_MODE=0`) requires.
 
 ## Why this exists
 
@@ -61,13 +55,12 @@ treats that asymmetry explicitly rather than pretending it's a fair three-way fi
 
 ## What this repo gives you
 
-A complete, ready-to-run pipeline. `results/` **is checked in for the pilot run**
-(`predictions.csv`, `metrics.txt`, `metrics_summary.json`, `summary_table.csv`, two
-figures) — see the pilot notice above: those numbers come from synthetic data and seeded
-mock predictions, not a real run, and `.gitignore` explicitly whitelists exactly those
+A complete, ready-to-run pipeline. `results/` is checked in (pilot run — synthetic data,
+see the notice above): `predictions.csv`, `metrics.txt`, `metrics_summary.json`,
+`summary_table.csv`, and two figures. `.gitignore` explicitly whitelists exactly those
 files (everything else under `results/` stays gitignored and regenerated). A real run
-(`PILOT_MODE=0`) would overwrite them with real numbers from an actual execution, never
-guesswork. Each model gets scored on:
+(`PILOT_MODE=0`) would overwrite them with real numbers from an actual execution. Each
+model gets scored on:
 
 - **Quadratic-weighted Cohen's kappa** — the field's standard metric (and the original
   Kaggle competition's own scoring metric); penalizes a Grade 0→4 miss more than a 0→1 miss
@@ -76,8 +69,8 @@ guesswork. Each model gets scored on:
 
 Every row in `results/predictions.csv` pairs one image's ground-truth grade against all
 three models' predictions, so agreement and disagreement are visible per image, not just
-in the aggregate metrics. Actual rows from the checked-in pilot run (synthetic data,
-seeded mock predictions — see notice above, not real model output):
+in the aggregate metrics. Actual rows from the checked-in pilot run (synthetic data — see
+notice above):
 
 | id_code | ground_truth | gemini_pred | medgemma_pred | retizero_pred |
 | --- | --- | --- | --- | --- |
@@ -129,20 +122,18 @@ notebook on a GPU runtime.
 
 ## Status
 
-**Pilot mode (`PILOT_MODE=1`, the default) has been run end to end**: the notebook is
-valid JSON, executes top to bottom with no errors (verified with `nbclient`), and
-produces the `results/` files checked into this repo. Re-running it reproduces the exact
-same `predictions.csv`/`metrics.txt` (verified across separate regenerate-and-execute
-cycles, including with different `PYTHONHASHSEED` values) — the seeded mock predictor is
-genuinely deterministic, unlike an earlier version of this pipeline that relied on
-Python's built-in `hash()` (process-randomized by default, not reproducible).
+**Pilot mode (`PILOT_MODE=1`, the default) runs end to end**: the notebook is valid JSON,
+executes top to bottom with no errors (verified with `nbclient`), and produces the
+`results/` files checked into this repo. Re-running it reproduces the exact same
+`predictions.csv`/`metrics.txt` (verified across separate regenerate-and-execute cycles,
+including with different `PYTHONHASHSEED` values) — the seeded mock predictor is
+genuinely deterministic, unlike an earlier version that relied on Python's built-in
+`hash()` (process-randomized by default, not reproducible).
 
-**Real mode (`PILOT_MODE=0`) has NOT been run.** It is structurally complete, with
-defensive checks at each failure-prone step (data download, model loading, API rate
-limits — see below), but has not been executed on real hardware — no GPU/Kaggle/API
-credentials exist in the environment this pipeline was built in. Don't claim
-"pipeline-tested" for the real path until someone actually runs it. Sample size,
-dependency, and ground-truth caveats below still apply once that happens.
+**Real mode (`PILOT_MODE=0`) has not been run** — no GPU/Kaggle/API credentials exist in
+the environment this pipeline was built in. It's structurally complete, with defensive
+checks at each failure-prone step (data download, model loading, API rate limits — see
+below), but don't call the real path "tested" until someone runs it.
 
 - **Sample size is `N_PER_GRADE = 25`** (125 images) by default — a statistically
   defensible size. Drop to `2` only for a quick pipeline smoke test, and don't report
